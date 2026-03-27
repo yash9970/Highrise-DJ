@@ -235,8 +235,8 @@ class DJBot(BaseBot):
             return
 
         if command == "skip":
-            if not is_master:
-                await self._reply(f"@{user.username} Only the master can skip songs.")
+            if not await self._is_bot_mod(user, is_master):
+                await self._reply(f"@{user.username} Only mods can skip songs.")
                 return
             next_song = get_next_song()
             if next_song:
@@ -265,7 +265,7 @@ class DJBot(BaseBot):
                 await self._reply(f"Radio listeners: {count}")
             return
 
-    async def _is_authorized(self, user: User, is_master: bool) -> bool:
+    async def _is_bot_mod(self, user: User, is_master: bool) -> bool:
         if is_master:
             return True
 
@@ -281,6 +281,16 @@ class DJBot(BaseBot):
         except Exception as e:
             print(f"[BOT] Could not check room privileges: {e}")
 
+        from vip_checker import is_mod
+        mod_status = await is_mod(user.username)
+        print(f"[AUTH] {user.username} MOD status: {mod_status}")
+        return mod_status
+
+    async def _is_authorized(self, user: User, is_master: bool) -> bool:
+        if await self._is_bot_mod(user, is_master):
+            return True
+
+        from vip_checker import is_vip
         vip_status = await is_vip(user.username)
         print(f"[AUTH] {user.username} VIP status: {vip_status}")
         return vip_status

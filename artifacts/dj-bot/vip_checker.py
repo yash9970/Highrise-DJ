@@ -23,3 +23,23 @@ async def get_vips() -> list[str]:
 async def is_vip(username: str) -> bool:
     vips = await get_vips()
     return username.lower() in vips
+
+
+async def get_mods() -> list[str]:
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{VIP_API_BASE}/mods", timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if isinstance(data, list):
+                        return [str(v).lower() for v in data]
+                    if isinstance(data, dict):
+                        return [str(v).lower() for v in data.get("mods", [])]
+    except Exception as e:
+        print(f"[VIP] Failed to fetch Mods: {e}")
+    return []
+
+
+async def is_mod(username: str) -> bool:
+    mods = await get_mods()
+    return username.lower() in mods
