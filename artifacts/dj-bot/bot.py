@@ -30,17 +30,17 @@ DJ_PHRASES = [
     "Music is life! Keep vibing!",
 ]
 
-HELP_TEXT = (
-    "=== DJ Bot Commands ===\n"
-    "!dj play <song> — Queue a song\n"
-    "!dj queue — Show the song queue\n"
-    "!dj np — Now playing\n"
-    "!dj skip — Skip current song\n"
-    "!dj clear — Clear the queue\n"
-    "!dj inventory — View bot outfit\n"
-    "!dj listeners — Radio listener count\n"
-    "!dj help — Show this message"
-)
+HELP_LINES = [
+    "=== DJ Bot Commands ===",
+    "!dj play <song> — Queue a song",
+    "!dj queue — Show song queue",
+    "!dj np — Now playing",
+    "!dj skip — Skip song (master)",
+    "!dj clear — Clear queue (master)",
+    "!dj inventory — Bot outfit (master)",
+    "!dj listeners — Listener count (master)",
+    "!dj help — This message (master)",
+]
 
 _active_tasks: list[asyncio.Task] = []
 
@@ -173,7 +173,7 @@ class DJBot(BaseBot):
 
         if command == "help":
             if is_master:
-                await self._reply(HELP_TEXT)
+                await self._reply_lines(HELP_LINES)
             else:
                 await self._reply(f"@{user.username} Only the master can use !dj help.")
             return
@@ -288,10 +288,25 @@ class DJBot(BaseBot):
             await self._reply("To change the bot's outfit, equip items in-game while logged in as the bot account.")
 
     async def _reply(self, message: str):
-        try:
-            await self.highrise.chat(message)
-        except Exception as e:
-            print(f"[BOT] Failed to send message: {e}")
+        MAX_LEN = 200
+        if len(message) <= MAX_LEN:
+            try:
+                await self.highrise.chat(message)
+            except Exception as e:
+                print(f"[BOT] Failed to send message: {e}")
+        else:
+            lines = message.split("\n")
+            await self._reply_lines(lines)
+
+    async def _reply_lines(self, lines: list[str]):
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                await self.highrise.chat(line[:200])
+                await asyncio.sleep(0.6)
+            except Exception as e:
+                print(f"[BOT] Failed to send line: {e}")
 
     async def on_user_join(self, user: User, position: Position | AnchorPosition) -> None:
         print(f"[BOT] User joined: {user.username}")
