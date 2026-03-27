@@ -3,6 +3,7 @@ import asyncio
 from highrise import BaseBot, SessionMetadata, User, Position, AnchorPosition
 from db import init_db, add_song, get_queue, get_next_song, delete_song
 from vip_checker import is_vip
+from streamer import broadcaster
 
 MASTER_USERNAME = "Zen1thos"
 
@@ -43,12 +44,9 @@ HELP_TEXT = (
 class DJBot(BaseBot):
     def __init__(self):
         super().__init__()
-        self.current_song: dict | None = None
-        self.playing: bool = False
         self._song_task: asyncio.Task | None = None
         self._dance_task: asyncio.Task | None = None
         self._talk_task: asyncio.Task | None = None
-        self._dance_index: int = 0
 
     async def on_start(self, session_metadata: SessionMetadata) -> None:
         print(f"[BOT] DJ Bot started. Bot ID: {session_metadata.user_id}")
@@ -58,7 +56,7 @@ class DJBot(BaseBot):
 
         try:
             await self.highrise.teleport(session_metadata.user_id, BOT_POSITION)
-            print(f"[BOT] Teleported to default position {BOT_POSITION}.")
+            print(f"[BOT] Teleported to position {BOT_POSITION}.")
         except Exception as e:
             print(f"[BOT] Teleport failed: {e}")
 
@@ -69,11 +67,10 @@ class DJBot(BaseBot):
         self._song_task = asyncio.create_task(self._song_loop())
 
     async def _dance_loop(self):
-        emotes = DANCE_EMOTES
         i = 0
         while True:
             try:
-                emote_id = emotes[i % len(emotes)]
+                emote_id = DANCE_EMOTES[i % len(DANCE_EMOTES)]
                 await self.highrise.send_emote(emote_id)
                 print(f"[BOT] Dancing: {emote_id}")
             except Exception as e:
@@ -82,7 +79,6 @@ class DJBot(BaseBot):
             await asyncio.sleep(30)
 
     async def _talk_loop(self):
-        import random
         await asyncio.sleep(30)
         i = 0
         while True:
@@ -98,34 +94,35 @@ class DJBot(BaseBot):
     async def _song_loop(self):
         while True:
             try:
-                if not self.playing:
-                    next_song = get_next_song()
-                    if next_song:
-                        self.current_song = next_song
-                        self.playing = True
-                        song_name = next_song["song_name"]
-                        requested_by = next_song["requested_by"]
-                        song_id = next_song["id"]
-                        print(f"[BOT] Now playing: {song_name} (requested by {requested_by})")
-                        try:
-                            await self.highrise.chat(f"Now playing: {song_name} (requested by {requested_by})")
-                        except Exception as e:
-                            print(f"[BOT] Chat error: {e}")
+                next_song = get_next_song()
+                if next_song:
+                    song_name = next_song["song_name"]
+                    requested_by = next_song["requested_by"]
+                    song_id = next_song["id"]
 
-                        await asyncio.sleep(180)
+                    try:
+                        await self.highrise.chat(f"Searching for: {song_name}... (requested by {requested_by})")
+                    except Exception:
+                        pass
 
-                        delete_song(song_id)
-                        self.playing = False
-                        self.current_song = None
-                        print(f"[BOT] Finished playing: {song_name}. Removed from queue.")
+                    success, title = await broadcaster.play(song_name)
+
+                    if success:
                         try:
-                            await self.highrise.chat(f"Finished playing: {song_name}")
-                        except Exception as e:
-                            print(f"[BOT] Chat error: {e}")
+                            await self.highrise.chat(f"Finished playing: {title}")
+                        except Exception:
+                            pass
                     else:
-                        await asyncio.sleep(5)
+                        try:
+                            await self.highrise.chat(f"Could not find '{song_name}' on YouTube. Skipping.")
+                        except Exception:
+                            pass
+
+                    delete_song(song_id)
+                    await asyncio.sleep(1)
                 else:
                     await asyncio.sleep(5)
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -171,10 +168,10 @@ class DJBot(BaseBot):
             add_song(song_name, user.username)
             queue = get_queue()
             position = len(queue)
-            if self.playing:
-                await self._reply(f"Added '{song_name}' to the queue at position {position}! (Requested by {user.username})")
+            if broadcaster.is_playing:
+                await self._reply(f"Added '{song_name}' to the queue at position {position}! (by {user.username})")
             else:
-                await self._reply(f"Added '{song_name}' to the queue! Coming up next. (Requested by {user.username})")
+                await self._reply(f"Added '{song_name}' — playing next! (by {user.username})")
             return
 
         if command == "queue":
@@ -187,16 +184,27 @@ class DJBot(BaseBot):
             else:
                 lines = ["Song Queue:"]
                 for i, song in enumerate(queue, 1):
-                    marker = " (NOW PLAYING)" if self.current_song and song["id"] == self.current_song["id"] else ""
+                    marker = " (NOW PLAYING)" if i == 1 and broadcaster.is_playing else ""
                     lines.append(f"{i}. {song['song_name']} by {song['requested_by']}{marker}")
                 await self._reply("\n".join(lines))
+            return
+
+        if command == "nowplaying" or command == "np":
+            if broadcaster.is_playing and broadcaster.current_title:
+                await self._reply(f"Now playing: {broadcaster.current_title}")
+            else:
+                await self._reply("Nothing is playing right now.")
             return
 
         if command == "skip":
             if not is_master:
                 await self._reply(f"@{user.username} Only the master can skip songs.")
                 return
-            await self._skip_current()
+            await broadcaster.stop_current()
+            await self._reply("Skipped! Loading next song...")
+            if self._song_task:
+                self._song_task.cancel()
+            self._song_task = asyncio.create_task(self._song_loop())
             return
 
         if command == "clear":
@@ -205,9 +213,14 @@ class DJBot(BaseBot):
                 return
             from db import clear_queue
             clear_queue()
-            self.playing = False
-            self.current_song = None
-            await self._reply("Queue cleared!")
+            await broadcaster.stop_current()
+            await self._reply("Queue cleared and playback stopped!")
+            return
+
+        if command == "listeners":
+            if is_master:
+                count = broadcaster.listener_count
+                await self._reply(f"Radio listeners: {count}")
             return
 
     async def _is_authorized(self, user: User, is_master: bool) -> bool:
@@ -218,7 +231,7 @@ class DJBot(BaseBot):
             room_users = await self.highrise.get_room_users()
             for room_user, position in room_users.content:
                 if room_user.id == user.id:
-                    privileges = getattr(room_user, 'privilege', None)
+                    privileges = getattr(room_user, "privilege", None)
                     if privileges in ("moderator", "designer"):
                         return True
                     break
@@ -228,26 +241,12 @@ class DJBot(BaseBot):
         vip_status = await is_vip(user.username)
         return vip_status
 
-    async def _skip_current(self):
-        if self.current_song:
-            song_id = self.current_song["id"]
-            song_name = self.current_song["song_name"]
-            delete_song(song_id)
-            self.playing = False
-            self.current_song = None
-            if self._song_task:
-                self._song_task.cancel()
-            self._song_task = asyncio.create_task(self._song_loop())
-            await self._reply(f"Skipped: {song_name}")
-        else:
-            await self._reply("Nothing is playing right now.")
-
     async def _handle_inventory(self, user: User, args: str):
         try:
             wardrobe = await self.highrise.get_my_wardrobe()
-            items = getattr(wardrobe, 'outfit', None) or []
+            items = getattr(wardrobe, "outfit", None) or []
             if items:
-                item_names = [getattr(item, 'id', str(item)) for item in items[:10]]
+                item_names = [getattr(item, "id", str(item)) for item in items[:10]]
                 await self._reply("Current outfit items:\n" + "\n".join(item_names))
             else:
                 await self._reply("Wardrobe is empty or unavailable. Change the bot's outfit in-game.")
