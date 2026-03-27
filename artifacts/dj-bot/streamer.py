@@ -15,6 +15,7 @@ class AudioBroadcaster:
         self._next_id = 0
         self._lock = asyncio.Lock()
         self._proc: Optional[asyncio.subprocess.Process] = None
+        self._ytdlp_proc: Optional[asyncio.subprocess.Process] = None
         self._playing = False
         self._current_title = ""
 
@@ -90,7 +91,16 @@ class AudioBroadcaster:
                 await self._proc.wait()
             except Exception:
                 pass
+        
+        if self._ytdlp_proc and self._ytdlp_proc.returncode is None:
+            try:
+                self._ytdlp_proc.kill()
+                await self._ytdlp_proc.wait()
+            except Exception:
+                pass
+                
         self._proc = None
+        self._ytdlp_proc = None
         self._playing = False
         self._current_title = ""
 
@@ -111,18 +121,30 @@ class AudioBroadcaster:
         self._current_title = title
 
         try:
+            # 1. Launch yt-dlp to stream audio to stdout
+            ytdlp_proc = await asyncio.create_subprocess_exec(
+                "yt-dlp",
+                "-o", "-",
+                "-q",
+                "--no-warnings",
+                "-f", "bestaudio/best",
+                f"scsearch1:{song_name}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            self._ytdlp_proc = ytdlp_proc
+
+            # 2. Launch ffmpeg reading from yt-dlp's stdout (pipe:0)
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg",
-                "-reconnect", "1",
-                "-reconnect_streamed", "1",
-                "-reconnect_delay_max", "5",
-                "-i", audio_url,
+                "-i", "pipe:0",
                 "-vn",
                 "-acodec", "libmp3lame",
                 "-ab", "128k",
                 "-ar", "44100",
                 "-f", "mp3",
                 "pipe:1",
+                stdin=ytdlp_proc.stdout,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -146,6 +168,7 @@ class AudioBroadcaster:
         finally:
             self._playing = False
             self._proc = None
+            self._ytdlp_proc = None
             self._current_title = ""
 
         return True, title
