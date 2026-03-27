@@ -44,7 +44,8 @@ _active_tasks: list[asyncio.Task] = []
 
 
 def _cancel_all_tasks():
-    for t in _active_tasks:
+    """Cancel all previously registered background tasks."""
+    for t in list(_active_tasks):
         if not t.done():
             t.cancel()
     _active_tasks.clear()
@@ -63,7 +64,10 @@ class DJBot(BaseBot):
         self._owner_id = session_metadata.room_info.owner_id
         print(f"[BOT] DJ Bot started. Bot ID: {session_metadata.user_id}")
         print(f"[BOT] Room owner ID: {self._owner_id} (this is the master)")
+
+        # Cancel any tasks from a previous bot instance that may still be running
         _cancel_all_tasks()
+
         init_db()
 
         await asyncio.sleep(2)
@@ -81,6 +85,7 @@ class DJBot(BaseBot):
         self._song_task = asyncio.create_task(self._song_loop())
 
         _active_tasks.extend([self._dance_task, self._talk_task, self._song_task])
+        print(f"[BOT] Background tasks started (dance, talk, song).")
 
     async def _dance_loop(self):
         i = 0
@@ -125,34 +130,47 @@ class DJBot(BaseBot):
                     song_id = next_song["id"]
 
                     try:
-                        await self.highrise.chat(f"Searching for: {song_name}... (requested by {requested_by})")
+                        await self.highrise.chat(f"🎵 Searching: {song_name} (by {requested_by})...")
                     except Exception:
                         pass
 
+                    print(f"[SONG] Playing queued song: {song_name!r} (id={song_id})")
                     success, title = await broadcaster.play(song_name)
 
                     if success:
+                        print(f"[SONG] Finished: {title!r}")
                         try:
-                            await self.highrise.chat(f"Finished playing: {title}")
+                            await self.highrise.chat(f"✅ Finished: {title}")
                         except Exception:
                             pass
                     else:
+                        print(f"[SONG] Could not find: {song_name!r} — skipping")
                         try:
-                            await self.highrise.chat(f"Could not find '{song_name}' on SoundCloud. Skipping.")
+                            await self.highrise.chat(f"❌ Could not find '{song_name}' on SoundCloud. Skipping.")
                         except Exception:
                             pass
 
                     delete_song(song_id)
                     await asyncio.sleep(1)
-                else:
-                    if not broadcaster.is_playing:
-                        self._is_fallback_playing = True
 
-                        await broadcaster.play("lofi hip hop mix")
-                        self._is_fallback_playing = False
+                else:
+                    # No queued songs — play lofi fallback
+                    if not broadcaster.is_playing:
+                        print("[SONG] Queue empty — starting lofi fallback.")
+                        self._is_fallback_playing = True
+                        try:
+                            await broadcaster.play("lofi hip hop mix")
+                        except asyncio.CancelledError:
+                            self._is_fallback_playing = False
+                            raise
+                        except Exception as e:
+                            print(f"[SONG] Fallback playback error: {e}")
+                        finally:
+                            self._is_fallback_playing = False
                     await asyncio.sleep(5)
 
             except asyncio.CancelledError:
+                print("[SONG] Song loop cancelled.")
                 break
             except Exception as e:
                 print(f"[BOT] Song loop error: {e}")

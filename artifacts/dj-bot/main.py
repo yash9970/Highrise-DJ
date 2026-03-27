@@ -10,6 +10,9 @@ from streamer import broadcaster
 
 PORT = int(os.environ.get("PORT", 8000))
 
+# Global reference to the active bot instance so we can cancel its tasks on restart
+_active_bot: DJBot | None = None
+
 
 async def health(request):
     status = {
@@ -49,7 +52,21 @@ async def run_web_server():
     print(f"")
 
 
+async def heartbeat_loop():
+    """
+    Prints a heartbeat every 60 seconds so Render never sees a silent stdout
+    and decides to kill the process. Also logs radio status for monitoring.
+    """
+    while True:
+        await asyncio.sleep(60)
+        status = "playing" if broadcaster.is_playing else "idle"
+        song = broadcaster.current_title or "none"
+        listeners = broadcaster.listener_count
+        print(f"[HEARTBEAT] status={status} | song={song!r} | listeners={listeners}")
+
+
 async def run_bot():
+    global _active_bot
     token = os.environ.get("HIGHRISE_TOKEN")
     room_id = os.environ.get("HIGHRISE_ROOM_ID")
 
@@ -58,20 +75,41 @@ async def run_bot():
     if not room_id:
         raise ValueError("HIGHRISE_ROOM_ID is not set")
 
+    retry_delay = 5  # seconds, will back off on repeated failures
+
     while True:
         try:
             print("[BOT] Connecting to Highrise...")
-            definitions = [BotDefinition(bot=DJBot(), room_id=room_id, api_token=token)]
+
+            # Stop any leftover audio from previous bot instance before creating new one
+            # This prevents orphaned song loops from racing with the new instance
+            await broadcaster.stop_current()
+
+            bot = DJBot()
+            _active_bot = bot
+
+            definitions = [BotDefinition(bot=bot, room_id=room_id, api_token=token)]
             await main(definitions)
+
+            # If main() returns normally (no exception), reset delay
+            retry_delay = 5
+            print("[BOT] Highrise session ended cleanly. Reconnecting...")
+
+        except asyncio.CancelledError:
+            print("[BOT] Bot task cancelled — shutting down.")
+            raise
         except Exception as e:
-            print(f"[BOT] Disconnected: {e}. Reconnecting in 10 seconds...")
-            await asyncio.sleep(10)
+            print(f"[BOT] Disconnected: {e}. Reconnecting in {retry_delay}s...")
+            await asyncio.sleep(retry_delay)
+            # Back off up to 60s to avoid hammering Highrise on repeated failures
+            retry_delay = min(retry_delay * 2, 60)
 
 
 async def run_all():
     await asyncio.gather(
         run_web_server(),
         run_bot(),
+        heartbeat_loop(),
     )
 
 
