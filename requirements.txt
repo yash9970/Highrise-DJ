@@ -1,0 +1,6 @@
+aiohttp>=3.12.13
+asyncpg>=0.31.0
+highrise-bot-sdk>=24.1.0
+psycopg2-binary>=2.9.11
+python-dotenv>=1.2.2
+yt-dlp>=2026.3.17
