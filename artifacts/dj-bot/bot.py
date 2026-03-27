@@ -138,7 +138,7 @@ class DJBot(BaseBot):
                             pass
                     else:
                         try:
-                            await self.highrise.chat(f"Could not find '{song_name}' on YouTube. Skipping.")
+                            await self.highrise.chat(f"Could not find '{song_name}' on SoundCloud. Skipping.")
                         except Exception:
                             pass
 
@@ -151,7 +151,7 @@ class DJBot(BaseBot):
                             await self.highrise.chat("The queue is empty! Playing 24/7 Lofi Radio... Type !dj play <song> to queue a track!")
                         except Exception:
                             pass
-                        await broadcaster.play("lofi hip hop radio - beats to relax/study to")
+                        await broadcaster.play("lofi hip hop mix")
                         self._is_fallback_playing = False
                     await asyncio.sleep(5)
 

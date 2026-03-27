@@ -97,7 +97,7 @@ class AudioBroadcaster:
     async def play(self, song_name: str) -> tuple[bool, str]:
         await self.stop_current()
 
-        print(f"[RADIO] Searching YouTube for: {song_name}")
+        print(f"[RADIO] Searching SoundCloud for: {song_name}")
         audio_url, title = await search_youtube(song_name)
 
         if not audio_url:
@@ -153,7 +153,7 @@ class AudioBroadcaster:
 
 async def search_youtube(song_name: str) -> tuple[Optional[str], str]:
     ydl_opts = {
-        "format": "bestaudio[ext=webm]/bestaudio/best",
+        "format": "bestaudio/best",
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
@@ -165,7 +165,7 @@ async def search_youtube(song_name: str) -> tuple[Optional[str], str]:
     def _search():
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f"ytsearch1:{song_name}", download=False)
+                info = ydl.extract_info(f"scsearch1:{song_name}", download=False)
                 if info and info.get("entries") and len(info["entries"]) > 0:
                     entry = info["entries"][0]
                     title = entry.get("title", song_name)
