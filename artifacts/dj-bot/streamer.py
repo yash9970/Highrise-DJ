@@ -130,7 +130,7 @@ class AudioBroadcaster:
                 "-f", "bestaudio/best",
                 f"scsearch1:{song_name}",
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
             )
             self._ytdlp_proc = ytdlp_proc
 
@@ -146,7 +146,7 @@ class AudioBroadcaster:
                 "pipe:1",
                 stdin=ytdlp_proc.stdout,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
             )
             self._proc = proc
 
@@ -157,7 +157,24 @@ class AudioBroadcaster:
                 await self.broadcast(chunk)
 
             await proc.wait()
-            print(f"[RADIO] Finished playing: {title}")
+            # print ffmpeg stderr if error
+            if proc.returncode != 0:
+                err = await proc.stderr.read()
+                print(f"[FFMPEG ERROR] {err.decode('utf-8')}")
+
+            # wait for yt-dlp to finish too, just in case
+            try:
+                if ytdlp_proc.returncode is None:
+                    ytdlp_proc.kill()
+                    await ytdlp_proc.wait()
+                elif ytdlp_proc.returncode != 0:
+                    err = await ytdlp_proc.stderr.read()
+                    print(f"[YTDLP ERROR] {err.decode('utf-8')}")
+            except Exception:
+                pass
+                
+            print(f"[RADIO] Finished playing: {title} (Codes: yt={ytdlp_proc.returncode}, ff={proc.returncode})")
+            return True, title
 
         except asyncio.CancelledError:
             await self.stop_current()
