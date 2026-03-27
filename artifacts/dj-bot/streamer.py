@@ -91,14 +91,14 @@ class AudioBroadcaster:
                 await self._proc.wait()
             except Exception:
                 pass
-        
+
         if self._ytdlp_proc and self._ytdlp_proc.returncode is None:
             try:
                 self._ytdlp_proc.kill()
                 await self._ytdlp_proc.wait()
             except Exception:
                 pass
-                
+
         self._proc = None
         self._ytdlp_proc = None
         self._playing = False
@@ -108,20 +108,20 @@ class AudioBroadcaster:
         await self.stop_current()
 
         print(f"[RADIO] Searching SoundCloud for: {song_name}")
-        audio_url, title = await search_youtube(song_name)
 
-        if not audio_url:
-            print(f"[RADIO] No audio found for: {song_name}")
+        # Step 1: Resolve the title via yt-dlp --print title (fast, no download)
+        title = await _resolve_title(song_name)
+        if not title:
+            print(f"[RADIO] Could not resolve title for: {song_name} — skipping.")
             return False, song_name
 
-        print(f"[RADIO] Found: {title}")
-        print(f"[RADIO] Starting stream...")
+        print(f"[RADIO] Found: {title} — starting stream...")
 
         self._playing = True
         self._current_title = title
 
         try:
-            # 1. Launch yt-dlp to stream audio to stdout
+            # Launch yt-dlp to download audio to stdout
             ytdlp_proc = await asyncio.create_subprocess_exec(
                 "yt-dlp",
                 "-o", "-",
@@ -134,7 +134,7 @@ class AudioBroadcaster:
             )
             self._ytdlp_proc = ytdlp_proc
 
-            # 2. Launch ffmpeg reading from yt-dlp's stdout (pipe:0)
+            # Launch ffmpeg reading from yt-dlp's stdout and encoding to MP3
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg",
                 "-i", "pipe:0",
@@ -157,23 +157,23 @@ class AudioBroadcaster:
                 await self.broadcast(chunk)
 
             await proc.wait()
-            # print ffmpeg stderr if error
-            if proc.returncode != 0:
-                err = await proc.stderr.read()
-                print(f"[FFMPEG ERROR] {err.decode('utf-8')}")
 
-            # wait for yt-dlp to finish too, just in case
+            if proc.returncode not in (0, None):
+                err = await proc.stderr.read()
+                print(f"[FFMPEG ERROR] code={proc.returncode} {err.decode('utf-8', errors='replace')}")
+
+            # Clean up yt-dlp
             try:
                 if ytdlp_proc.returncode is None:
                     ytdlp_proc.kill()
                     await ytdlp_proc.wait()
                 elif ytdlp_proc.returncode != 0:
                     err = await ytdlp_proc.stderr.read()
-                    print(f"[YTDLP ERROR] {err.decode('utf-8')}")
+                    print(f"[YTDLP ERROR] code={ytdlp_proc.returncode} {err.decode('utf-8', errors='replace')}")
             except Exception:
                 pass
-                
-            print(f"[RADIO] Finished playing: {title} (Codes: yt={ytdlp_proc.returncode}, ff={proc.returncode})")
+
+            print(f"[RADIO] Finished playing: {title} (ff={proc.returncode}, yt={ytdlp_proc.returncode})")
             return True, title
 
         except asyncio.CancelledError:
@@ -188,32 +188,38 @@ class AudioBroadcaster:
             self._ytdlp_proc = None
             self._current_title = ""
 
-        return True, title
 
-
-async def search_youtube(song_name: str) -> tuple[Optional[str], str]:
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "extract_flat": False,
-    }
-
+async def _resolve_title(song_name: str) -> Optional[str]:
+    """
+    Uses yt-dlp Python API to search SoundCloud and return the title
+    of the first result, without downloading anything.
+    Returns None if nothing is found.
+    """
     loop = asyncio.get_event_loop()
 
     def _search():
+        ydl_opts = {
+            "format": "bestaudio/best",
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": True,   # Only fetch metadata, no URLs needed
+        }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(f"scsearch1:{song_name}", download=False)
-                if info and info.get("entries") and len(info["entries"]) > 0:
-                    entry = info["entries"][0]
-                    title = entry.get("title", song_name)
-                    url = entry.get("url")
-                    return url, title
+                if info:
+                    entries = info.get("entries") or []
+                    if entries:
+                        entry = entries[0]
+                        return entry.get("title") or song_name
+                    # Sometimes scsearch1 returns a single entry directly
+                    title = info.get("title")
+                    if title:
+                        return title
         except Exception as e:
-            print(f"[RADIO] yt-dlp error: {e}")
-        return None, song_name
+            print(f"[RADIO] yt-dlp title resolve error: {e}")
+        return None
 
     return await loop.run_in_executor(None, _search)
 
