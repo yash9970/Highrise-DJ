@@ -57,6 +57,7 @@ class DJBot(BaseBot):
         self._song_task: asyncio.Task | None = None
         self._dance_task: asyncio.Task | None = None
         self._talk_task: asyncio.Task | None = None
+        self._is_fallback_playing: bool = False
 
     async def on_start(self, session_metadata: SessionMetadata) -> None:
         self._owner_id = session_metadata.room_info.owner_id
@@ -144,6 +145,14 @@ class DJBot(BaseBot):
                     delete_song(song_id)
                     await asyncio.sleep(1)
                 else:
+                    if not broadcaster.is_playing:
+                        self._is_fallback_playing = True
+                        try:
+                            await self.highrise.chat("The queue is empty! Playing 24/7 Lofi Radio... Type !dj play <song> to queue a track!")
+                        except Exception:
+                            pass
+                        await broadcaster.play("lofi hip hop radio - beats to relax/study to")
+                        self._is_fallback_playing = False
                     await asyncio.sleep(5)
 
             except asyncio.CancelledError:
@@ -194,12 +203,16 @@ class DJBot(BaseBot):
                 await self._reply(f"@{user.username} Usage: !dj play <song name>")
                 return
             add_song(args, user.username)
-            queue = get_queue()
-            position = len(queue)
-            if broadcaster.is_playing:
-                await self._reply(f"Added '{args}' to the queue at position {position}! (by {user.username})")
+            if self._is_fallback_playing:
+                await broadcaster.stop_current()
+                await self._reply(f"Interrupting radio to play '{args}'! (by {user.username})")
             else:
-                await self._reply(f"Added '{args}' — playing next! (by {user.username})")
+                queue = get_queue()
+                position = len(queue)
+                if broadcaster.is_playing:
+                    await self._reply(f"Added '{args}' to the queue at position {position}! (by {user.username})")
+                else:
+                    await self._reply(f"Added '{args}' — playing next! (by {user.username})")
             return
 
         if command == "queue":
