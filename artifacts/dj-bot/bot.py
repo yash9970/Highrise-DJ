@@ -5,8 +5,6 @@ from db import init_db, add_song, get_queue, get_next_song, delete_song
 from vip_checker import is_vip
 from streamer import broadcaster
 
-MASTER_USERNAME = "Zen1thos"
-
 BOT_POSITION = Position(10.5, 0.25, 13.5, facing="FrontLeft")
 
 DANCE_EMOTES = [
@@ -55,12 +53,15 @@ def _cancel_all_tasks():
 class DJBot(BaseBot):
     def __init__(self):
         super().__init__()
+        self._owner_id: str = ""
         self._song_task: asyncio.Task | None = None
         self._dance_task: asyncio.Task | None = None
         self._talk_task: asyncio.Task | None = None
 
     async def on_start(self, session_metadata: SessionMetadata) -> None:
+        self._owner_id = session_metadata.room_info.owner_id
         print(f"[BOT] DJ Bot started. Bot ID: {session_metadata.user_id}")
+        print(f"[BOT] Room owner ID: {self._owner_id} (this is the master)")
         _cancel_all_tasks()
         init_db()
 
@@ -166,8 +167,8 @@ class DJBot(BaseBot):
         command = parts[1].lower()
         args = parts[2].strip() if len(parts) > 2 else ""
 
-        is_master = user.username.lower() == MASTER_USERNAME.lower()
-        print(f"[CMD] Command='{command}' from '{user.username}' (is_master={is_master})")
+        is_master = (user.id == self._owner_id)
+        print(f"[CMD] Command='{command}' from '{user.username}' id={user.id} (is_master={is_master})")
 
         authorized = await self._is_authorized(user, is_master)
 
