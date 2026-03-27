@@ -219,6 +219,23 @@ class AudioBroadcaster:
 # Helper: resolve song title + pick source
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Search Helper: Persistent yt-dlp instance to save memory & time
+# ─────────────────────────────────────────────────────────────────────────────
+YDL_OPTS = {
+    "format": "bestaudio/best",
+    "noplaylist": True,
+    "quiet": True,
+    "no_warnings": True,
+    "extract_flat": True,
+    "cachedir": False,  # Reduce disk/memory usage on Render
+    "no_color": True,
+}
+
+# We initialize one global instance to avoid the overhead of loading extractors on every search
+_ydl = yt_dlp.YoutubeDL(YDL_OPTS)
+
+
 async def _resolve_song(song_name: str) -> Optional[tuple[str, str, str]]:
     """
     Tries each source in SEARCH_SOURCES order.
@@ -235,30 +252,30 @@ async def _resolve_song(song_name: str) -> Optional[tuple[str, str, str]]:
         print(f"[SEARCH] Trying {label} for: {song_name!r}")
 
         def _search(q=query, ex=extra):
-            ydl_opts = {
-                "format": "bestaudio/best",
-                "noplaylist": True,
-                "quiet": True,
-                "no_warnings": True,
-                "extract_flat": True,
-                **ex,
-            }
+            # Temporarily update params for this specific search if needed (like iOS client)
+            # Note: _ydl.params is a dict we can update or use context managers
+            old_params = _ydl.params.copy()
+            if ex:
+                _ydl.params.update(ex)
+
             try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(q, download=False)
-                    if not info:
-                        return None
-                    # Playlist-style result (entries list)
-                    entries = info.get("entries") or []
-                    if entries:
-                        entry = entries[0]
-                        return entry.get("title") or song_name
-                    # Single-entry result
-                    title = info.get("title")
-                    if title:
-                        return title
+                info = _ydl.extract_info(q, download=False)
+                if not info:
+                    return None
+                # Playlist-style result (entries list)
+                entries = info.get("entries") or []
+                if entries:
+                    entry = entries[0]
+                    return entry.get("title") or song_name
+                # Single-entry result
+                title = info.get("title")
+                if title:
+                    return title
             except Exception as e:
                 print(f"[SEARCH] {label} error: {e}")
+            finally:
+                # Restore original params
+                _ydl.params = old_params
             return None
 
         title = await loop.run_in_executor(None, _search)

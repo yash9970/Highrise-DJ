@@ -183,32 +183,37 @@ class DJBot(BaseBot):
                     await asyncio.sleep(1)
 
                 else:
-                    # ── Queue is empty — auto-play next trending song ──────────
+                    # ── Queue is empty — pick next trending song ─────────────
                     trending_song = TRENDING_SONGS[self._trending_index % len(TRENDING_SONGS)]
                     self._trending_index += 1
 
-                    print(f"[SONG] Queue empty — auto-playing trending: {trending_song!r}")
+                    print(f"[SONG] Queue empty — picking trending: {trending_song!r}")
+
+                    # Important: We don't announce in chat until it's successfully resolved
+                    # to avoid "rapid skipping" chat spam if search fails.
                     self._is_fallback_playing = True
-
                     try:
-                        await self.highrise.chat(
-                            f"🎶 Queue is empty! Auto-playing trending: {trending_song} 🔥"
-                        )
-                    except Exception:
-                        pass
+                        success, title = await broadcaster.play(trending_song)
+                        if success:
+                            try:
+                                await self.highrise.chat(f"🎶 Auto-playing trending: {title} 🔥")
+                            except Exception:
+                                pass
+                            # Since broadcaster.play blocks until done, we don't need a large sleep here.
+                            await asyncio.sleep(1)
+                        else:
+                            print(f"[SONG] Trending search failed for {trending_song!r}. Backing off 30s.")
+                            # Long delay on failure prevents OOM loop and chat spam
+                            await asyncio.sleep(30)
 
-                    try:
-                        await broadcaster.play(trending_song)
                     except asyncio.CancelledError:
                         self._is_fallback_playing = False
                         raise
                     except Exception as e:
                         print(f"[SONG] Trending playback error: {e}")
+                        await asyncio.sleep(30)
                     finally:
                         self._is_fallback_playing = False
-
-                    # Brief pause before picking the next trending song
-                    await asyncio.sleep(2)
 
             except asyncio.CancelledError:
                 print("[SONG] Song loop cancelled.")
