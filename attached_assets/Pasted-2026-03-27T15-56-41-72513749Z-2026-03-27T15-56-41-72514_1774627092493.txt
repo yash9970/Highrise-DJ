@@ -1,0 +1,50 @@
+2026-03-27T15:56:41.72513749Z           ~~~~^^
+2026-03-27T15:56:41.7251419Z         File "/opt/render/project/src/.venv/lib/python3.14/site-packages/pip/_vendor/pyproject_hooks/_in_process/_in_process.py", line 373, in main
+2026-03-27T15:56:41.72514413Z           json_out["return_val"] = hook(**hook_input["kwargs"])
+2026-03-27T15:56:41.725146181Z                                    ~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+2026-03-27T15:56:41.725148261Z         File "/opt/render/project/src/.venv/lib/python3.14/site-packages/pip/_vendor/pyproject_hooks/_in_process/_in_process.py", line 280, in build_wheel
+2026-03-27T15:56:41.725150351Z           return _build_backend().build_wheel(
+2026-03-27T15:56:41.725152301Z                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+2026-03-27T15:56:41.725154341Z               wheel_directory, config_settings, metadata_directory
+2026-03-27T15:56:41.725156511Z               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-03-27T15:56:41.725158561Z           )
+2026-03-27T15:56:41.725160761Z           ^
+2026-03-27T15:56:41.725162931Z         File "/tmp/pip-build-env-fxz80wyn/overlay/lib/python3.14/site-packages/poetry/core/masonry/api.py", line 58, in build_wheel
+2026-03-27T15:56:41.725164962Z           return WheelBuilder.make_in(
+2026-03-27T15:56:41.725166931Z                  ~~~~~~~~~~~~~~~~~~~~^
+2026-03-27T15:56:41.725169032Z               poetry,
+2026-03-27T15:56:41.725171152Z               ^^^^^^^
+2026-03-27T15:56:41.725173322Z           ...<2 lines>...
+2026-03-27T15:56:41.725175302Z               config_settings=config_settings,
+2026-03-27T15:56:41.725177302Z               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-03-27T15:56:41.725179342Z           )
+2026-03-27T15:56:41.725181322Z           ^
+2026-03-27T15:56:41.725183323Z         File "/tmp/pip-build-env-fxz80wyn/overlay/lib/python3.14/site-packages/poetry/core/masonry/builders/wheel.py", line 95, in make_in
+2026-03-27T15:56:41.725185323Z           wb.build(target_dir=directory)
+2026-03-27T15:56:41.725187313Z           ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+2026-03-27T15:56:41.725189303Z         File "/tmp/pip-build-env-fxz80wyn/overlay/lib/python3.14/site-packages/poetry/core/masonry/builders/wheel.py", line 134, in build
+2026-03-27T15:56:41.725191313Z           self._build(zip_file)
+2026-03-27T15:56:41.725193283Z           ~~~~~~~~~~~^^^^^^^^^^
+2026-03-27T15:56:41.725195293Z         File "/tmp/pip-build-env-fxz80wyn/overlay/lib/python3.14/site-packages/poetry/core/masonry/builders/wheel.py", line 183, in _build
+2026-03-27T15:56:41.725197293Z           self._run_build_script(self._package.build_script)
+2026-03-27T15:56:41.725199293Z           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-03-27T15:56:41.725201343Z         File "/tmp/pip-build-env-fxz80wyn/overlay/lib/python3.14/site-packages/poetry/core/masonry/builders/wheel.py", line 304, in _run_build_script
+2026-03-27T15:56:41.725203413Z           subprocess.check_call([self.executable.as_posix(), build_script])
+2026-03-27T15:56:41.725208944Z           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-03-27T15:56:41.725211074Z         File "/opt/render/project/python/Python-3.14.3/lib/python3.14/subprocess.py", line 419, in check_call
+2026-03-27T15:56:41.725213034Z           raise CalledProcessError(retcode, cmd)
+2026-03-27T15:56:41.725215044Z       subprocess.CalledProcessError: Command '['/opt/render/project/src/.venv/bin/python3.14', 'build.py']' returned non-zero exit status 1.
+2026-03-27T15:56:41.725217044Z       [end of output]
+2026-03-27T15:56:41.725219324Z   
+2026-03-27T15:56:41.725222005Z   note: This error originates from a subprocess, and is likely not a problem with pip.
+2026-03-27T15:56:41.725565952Z   ERROR: Failed building wheel for pendulum
+2026-03-27T15:56:41.725870148Z Failed to build pendulum
+2026-03-27T15:56:42.045249746Z 
+2026-03-27T15:56:42.045272887Z [notice] A new release of pip is available: 25.3 -> 26.0.1
+2026-03-27T15:56:42.045276967Z [notice] To update, run: pip install --upgrade pip
+2026-03-27T15:56:42.046914722Z error: failed-wheel-build-for-install
+2026-03-27T15:56:42.046928383Z 
+2026-03-27T15:56:42.046931834Z × Failed to build installable wheels for some pyproject.toml based projects
+2026-03-27T15:56:42.046934374Z ╰─> pendulum
+2026-03-27T15:56:42.581582269Z ==> Build failed 😞
+2026-03-27T15:56:42.58161614Z ==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys
