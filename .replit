@@ -30,12 +30,13 @@ args = "DJ Bot"
 name = "DJ Bot"
 author = "agent"
 
+[workflows.workflow.metadata]
+outputType = "console"
+
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "cd artifacts/dj-bot && python main.py"
-
-[workflows.workflow.metadata]
-outputType = "console"
+waitForPort = 8000
 
 [agent]
 stack = "PNPM_WORKSPACE"
@@ -48,3 +49,8 @@ timeoutMs = 20000
 [nix]
 channel = "stable-25_05"
 packages = ["postgresql"]
+
+[userenv]
+
+[userenv.shared]
+PORT = "8000"

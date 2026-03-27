@@ -6,9 +6,28 @@ from vip_checker import is_vip
 
 MASTER_USERNAME = "Zen1thos"
 
-BOT_POSITION = Position(10.5, 0.25, 13.5, facing="FrontRight")
+BOT_POSITION = Position(10.5, 0.25, 13.5, facing="FrontLeft")
 
-DANCE_EMOTE = "emote-dance"
+DANCE_EMOTES = [
+    "dance-tiktok8",
+    "dance-blackpink",
+    "dance-pennywise",
+    "idle-dance-casual",
+    "dance-tiktok2",
+]
+
+DJ_PHRASES = [
+    "Let the music move you! DJ in the house!",
+    "Vibes only! Keep the energy up!",
+    "This next track is FIRE!",
+    "Put your hands up if you're feeling it!",
+    "Drop it like it's hot!",
+    "The queue is open — type !dj play <song> to request!",
+    "DJ never stops! Request your song with !dj play <song>",
+    "Feel the rhythm, feel the bass!",
+    "Tonight we dance all night long!",
+    "Music is life! Keep vibing!",
+]
 
 HELP_TEXT = (
     "DJ Bot Commands (prefix: !dj):\n"
@@ -16,8 +35,8 @@ HELP_TEXT = (
     "  !dj queue — Show the song queue\n"
     "  !dj skip — Skip current song (master only)\n"
     "  !dj clear — Clear the queue (master only)\n"
-    "  !dj inventory — Show/change bot outfit (master only)\n"
-    "  !dj help — Show this help message"
+    "  !dj inventory — View bot outfit info (master only)\n"
+    "  !dj help — Show this help message (master only)"
 )
 
 
@@ -27,6 +46,9 @@ class DJBot(BaseBot):
         self.current_song: dict | None = None
         self.playing: bool = False
         self._song_task: asyncio.Task | None = None
+        self._dance_task: asyncio.Task | None = None
+        self._talk_task: asyncio.Task | None = None
+        self._dance_index: int = 0
 
     async def on_start(self, session_metadata: SessionMetadata) -> None:
         print(f"[BOT] DJ Bot started. Bot ID: {session_metadata.user_id}")
@@ -36,21 +58,42 @@ class DJBot(BaseBot):
 
         try:
             await self.highrise.teleport(session_metadata.user_id, BOT_POSITION)
-            print(f"[BOT] Teleported to default position.")
+            print(f"[BOT] Teleported to default position {BOT_POSITION}.")
         except Exception as e:
             print(f"[BOT] Teleport failed: {e}")
 
-        await asyncio.sleep(1)
-        await self._start_dancing()
+        await asyncio.sleep(2)
 
+        self._dance_task = asyncio.create_task(self._dance_loop())
+        self._talk_task = asyncio.create_task(self._talk_loop())
         self._song_task = asyncio.create_task(self._song_loop())
 
-    async def _start_dancing(self):
-        try:
-            await self.highrise.send_emote(DANCE_EMOTE)
-            print(f"[BOT] Started dancing with emote: {DANCE_EMOTE}")
-        except Exception as e:
-            print(f"[BOT] Dance emote failed: {e}")
+    async def _dance_loop(self):
+        emotes = DANCE_EMOTES
+        i = 0
+        while True:
+            try:
+                emote_id = emotes[i % len(emotes)]
+                await self.highrise.send_emote(emote_id)
+                print(f"[BOT] Dancing: {emote_id}")
+            except Exception as e:
+                print(f"[BOT] Dance emote error: {e}")
+            i += 1
+            await asyncio.sleep(30)
+
+    async def _talk_loop(self):
+        import random
+        await asyncio.sleep(30)
+        i = 0
+        while True:
+            try:
+                phrase = DJ_PHRASES[i % len(DJ_PHRASES)]
+                await self.highrise.chat(phrase)
+                print(f"[BOT] DJ talk: {phrase}")
+            except Exception as e:
+                print(f"[BOT] Talk error: {e}")
+            i += 1
+            await asyncio.sleep(30)
 
     async def _song_loop(self):
         while True:
@@ -140,11 +183,12 @@ class DJBot(BaseBot):
                 return
             queue = get_queue()
             if not queue:
-                await self._reply("The queue is empty!")
+                await self._reply("The queue is empty! Request a song with !dj play <song name>")
             else:
                 lines = ["Song Queue:"]
                 for i, song in enumerate(queue, 1):
-                    lines.append(f"{i}. {song['song_name']} (by {song['requested_by']})")
+                    marker = " (NOW PLAYING)" if self.current_song and song["id"] == self.current_song["id"] else ""
+                    lines.append(f"{i}. {song['song_name']} by {song['requested_by']}{marker}")
                 await self._reply("\n".join(lines))
             return
 
@@ -201,18 +245,15 @@ class DJBot(BaseBot):
     async def _handle_inventory(self, user: User, args: str):
         try:
             wardrobe = await self.highrise.get_my_wardrobe()
-            if not args:
-                items = wardrobe.outfit if hasattr(wardrobe, 'outfit') else []
-                if items:
-                    item_names = [getattr(item, 'id', str(item)) for item in items[:10]]
-                    await self._reply(f"Current outfit items:\n" + "\n".join(item_names))
-                else:
-                    await self._reply("Could not retrieve outfit. Check bot's wardrobe in-game.")
+            items = getattr(wardrobe, 'outfit', None) or []
+            if items:
+                item_names = [getattr(item, 'id', str(item)) for item in items[:10]]
+                await self._reply("Current outfit items:\n" + "\n".join(item_names))
             else:
-                await self._reply(f"To change outfits, use the in-game wardrobe feature.")
+                await self._reply("Wardrobe is empty or unavailable. Change the bot's outfit in-game.")
         except Exception as e:
             print(f"[BOT] Inventory error: {e}")
-            await self._reply(f"Inventory check: Use the in-game wardrobe to change the bot's outfit. Error: {str(e)[:60]}")
+            await self._reply("To change the DJ bot's outfit, use the in-game wardrobe.")
 
     async def _reply(self, message: str):
         try:
