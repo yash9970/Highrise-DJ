@@ -91,6 +91,26 @@ Generated Zod schemas from the OpenAPI spec (e.g. `HealthCheckResponse`). Used b
 
 Generated React Query hooks and fetch client from the OpenAPI spec (e.g. `useHealthCheck`, `healthCheck`).
 
+### `artifacts/dj-bot` (Python DJ Bot for Highrise)
+
+A standalone Python bot that connects to the Highrise virtual world.
+
+- Entry: `main.py` — loads secrets, starts the bot with `asyncio.run`
+- Bot logic: `bot.py` — handles all commands, dancing, song playback loop
+- Database: `db.py` — song queue stored in PostgreSQL, deleted after played
+- VIP check: `vip_checker.py` — fetches VIPs from `https://highrise-helper.onrender.com/vips`
+- Default position: x=10.5, y=0.25, z=13.5, facing FrontRight
+- Master username: `Zen1thos`
+- Run: `cd artifacts/dj-bot && python main.py`
+
+#### Commands (all require `!dj` prefix)
+- `!dj play <song>` — Queue a song (VIPs, mods, designers, or master only)
+- `!dj queue` — Show the song queue
+- `!dj skip` — Skip current song (master only)
+- `!dj clear` — Clear queue (master only)
+- `!dj inventory` — View/manage bot outfit (master only)
+- `!dj help` — Show all commands (master only)
+
 ### `scripts` (`@workspace/scripts`)
 
 Utility scripts package. Each script is a `.ts` file in `src/` with a corresponding npm script in `package.json`. Run scripts via `pnpm --filter @workspace/scripts run <script>`. Scripts can import any workspace package (e.g., `@workspace/db`) by adding it as a dependency in `scripts/package.json`.
