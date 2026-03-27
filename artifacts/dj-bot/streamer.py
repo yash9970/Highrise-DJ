@@ -10,14 +10,14 @@ from typing import Optional
 # ─────────────────────────────────────────────────────────────────────────────
 SEARCH_SOURCES = [
     {
-        "label": "YouTube",
-        "prefix": "ytsearch1",
-        "extra_args": {"extractor_args": {"youtube": {"player_client": ["ios"]}}},
-    },
-    {
         "label": "SoundCloud",
         "prefix": "scsearch1",
         "extra_args": {},
+    },
+    {
+        "label": "YouTube",
+        "prefix": "ytsearch1",
+        "extra_args": {"extractor_args": {"youtube": {"player_client": ["ios"]}}},
     },
 ]
 
@@ -175,11 +175,13 @@ class AudioBroadcaster:
             )
             self._proc = proc
 
+            chunks_sent = 0
             while True:
                 chunk = await proc.stdout.read(8192)
                 if not chunk:
                     break
                 await self.broadcast(chunk)
+                chunks_sent += 1
 
             await proc.wait()
 
@@ -198,7 +200,11 @@ class AudioBroadcaster:
             except Exception:
                 pass
 
-            print(f"[RADIO] Done: '{title}' [{source_label}] (ff={proc.returncode}, yt={ytdlp_proc.returncode})")
+            if chunks_sent == 0:
+                print(f"[RADIO] Failed: '{title}' [{source_label}] produced zero audio chunks (blocked or invalid stream).")
+                return False, title
+
+            print(f"[RADIO] Done: '{title}' [{source_label}] (ff={proc.returncode}, yt={ytdlp_proc.returncode}, chunks={chunks_sent})")
             return True, title
 
         except asyncio.CancelledError:
