@@ -105,7 +105,26 @@ async def run_bot():
             retry_delay = min(retry_delay * 2, 60)
 
 
+async def _clear_ytdlp_cache():
+    """
+    Clears yt-dlp's cache on startup.
+    SoundCloud requires a client_id that yt-dlp fetches and caches.
+    A stale cached client_id causes "not found" for every search.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "yt-dlp", "--rm-cache-dir",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.wait()
+        print("[STARTUP] yt-dlp cache cleared (fresh SoundCloud client_id will be fetched).")
+    except Exception as e:
+        print(f"[STARTUP] Could not clear yt-dlp cache: {e}")
+
+
 async def run_all():
+    await _clear_ytdlp_cache()
     await asyncio.gather(
         run_web_server(),
         run_bot(),
