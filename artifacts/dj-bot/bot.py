@@ -160,24 +160,33 @@ class DJBot(BaseBot):
                     requested_by = next_song["requested_by"]
                     song_id = next_song["id"]
 
+                    # Announce immediately so user knows their request was received
                     try:
-                        await self.highrise.chat(f"🎵 Searching: {song_name} (by {requested_by})...")
+                        await self.highrise.chat(f"🔍 Searching for: {song_name} (by {requested_by})...")
                     except Exception:
                         pass
 
                     print(f"[SONG] Playing queued song: {song_name!r} (id={song_id})")
-                    success, title = await broadcaster.play(song_name)
+
+                    # on_found fires the moment search succeeds and streaming starts
+                    async def _on_queued_found(title, source):
+                        try:
+                            await self.highrise.chat(f"▶️ Now playing: {title}")
+                        except Exception:
+                            pass
+
+                    success, title = await broadcaster.play(song_name, on_found=_on_queued_found)
 
                     if success:
                         print(f"[SONG] Finished: {title!r}")
                         try:
-                            await self.highrise.chat(f"✅ Finished: {title}")
+                            await self.highrise.chat(f"✅ Done: {title} — type !dj play <song> to request next!")
                         except Exception:
                             pass
                     else:
                         print(f"[SONG] Could not find: {song_name!r} — skipping")
                         try:
-                            await self.highrise.chat(f"❌ Could not find '{song_name}' on SoundCloud. Skipping.")
+                            await self.highrise.chat(f"❌ Could not find '{song_name}'. Skipping!")
                         except Exception:
                             pass
 
@@ -185,29 +194,31 @@ class DJBot(BaseBot):
                     await asyncio.sleep(1)
 
                 else:
-                    # ── Queue is empty — pick next trending song ─────────────
+                    # ── Queue is empty — auto-play next trending song ─────────
                     global _trending_index
                     trending_song = TRENDING_SONGS[_trending_index % len(TRENDING_SONGS)]
                     _trending_index += 1
 
                     print(f"[SONG] Queue empty — picking trending: {trending_song!r}")
 
-                    # Important: We don't announce in chat until it's successfully resolved
-                    # to avoid "rapid skipping" chat spam if search fails.
                     self._is_fallback_playing = True
                     try:
-                        success, title = await broadcaster.play(trending_song)
-                        if success:
+                        # on_found fires when search succeeds, BEFORE streaming starts
+                        # This is the correct time to announce — not after (confusing)
+                        async def _on_trending_found(title, source):
                             try:
-                                await self.highrise.chat(f"🎶 Auto-playing trending: {title} 🔥")
+                                await self.highrise.chat(f"🎶 Auto-playing: {title} 🔥  |  !dj play <song> to request")
                             except Exception:
                                 pass
-                            # Since broadcaster.play blocks until done, we don't need a large sleep here.
-                            await asyncio.sleep(1)
-                        else:
-                            print(f"[SONG] Trending search failed for {trending_song!r}. Backing off 30s.")
-                            # Long delay on failure prevents OOM loop and chat spam
+
+                        success, title = await broadcaster.play(
+                            trending_song, on_found=_on_trending_found
+                        )
+                        if not success:
+                            print(f"[SONG] Trending failed for {trending_song!r}. Backing off 30s.")
                             await asyncio.sleep(30)
+                        else:
+                            await asyncio.sleep(1)
 
                     except asyncio.CancelledError:
                         self._is_fallback_playing = False

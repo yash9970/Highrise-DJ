@@ -170,12 +170,17 @@ class AudioBroadcaster:
         self._current_title = ""
         self._current_source = ""
 
-    async def play(self, song_name: str) -> tuple[bool, str]:
+    async def play(
+        self,
+        song_name: str,
+        on_found=None,          # Optional async callback: on_found(title, source_label)
+    ) -> tuple[bool, str]:
         """
         Finds and streams a song. Returns (success, title).
 
-        1. Tries each source in SOURCES order using a fast title-check subprocess.
-        2. Once a source is confirmed, streams via yt-dlp → ffmpeg pipeline.
+        on_found: if provided, called with (title, source_label) the moment search
+                  succeeds and streaming is about to begin — perfect for announcing
+                  "Now playing" without guessing before search or announcing after.
         """
         await self.stop_current()
 
@@ -187,6 +192,13 @@ class AudioBroadcaster:
 
         title, direct_url, extra_args, source_label = found
         print(f"[RADIO] '{title}' found via {source_label} — starting stream...")
+
+        # Notify caller that song was found and streaming is starting
+        if on_found:
+            try:
+                await on_found(title, source_label)
+            except Exception as e:
+                print(f"[RADIO] on_found callback error: {e}")
 
         self._playing = True
         self._current_title = title
