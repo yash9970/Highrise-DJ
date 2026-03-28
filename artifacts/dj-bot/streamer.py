@@ -2,73 +2,78 @@
 streamer.py — Audio Broadcaster for Highrise DJ Bot
 
 Stream pipeline:
-  yt-dlp (search + download to stdout)
+  yt-dlp (search + resolve URL)
+    → yt-dlp (download audio to OS pipe)
     → ffmpeg (re-encode to 128k MP3)
-    → broadcast to all connected HTTP listeners
+    → broadcast to all connected HTTP clients
 
-Search strategy (in order):
-  1. SoundCloud  — Works well on server IPs, large catalog
-  2. YouTube     — Fallback, tries multiple player clients
+Search strategy (waterfall):
+  1. SoundCloud  — works on datacenter IPs, large catalog
+  2. YouTube     — fallback with multi-client emulation
 
-Key design:
-  - Title resolution uses `yt-dlp --print title --skip-download` subprocess
-    (same binary/path as streaming, so if title check works, streaming WILL work)
-  - No Python yt-dlp API used (avoids stale client_id cache, thread issues)
-  - 30s timeout on title resolution per source
-  - ffmpeg reconnect flags for resilient streaming
+Key design decisions:
+  - Title check uses `yt-dlp --print title --print webpage_url --skip-download`
+    which returns BOTH fields in one call. The stream subprocess then uses the
+    direct URL — guaranteeing announced title == audio played (no second search).
+  - OS-level pipe (os.pipe()) connects yt-dlp → ffmpeg instead of asyncio
+    StreamReader, which doesn't have .fileno() and crashes subprocess creation.
+  - Global semaphore limits concurrent searches to 1, preventing zombie
+    yt-dlp processes during reconnect storms.
+  - _is_searching flag: True from search-start to stream-end, so callers can
+    check `broadcaster.is_active` even during the search phase.
+  - _interrupted flag: set by stop_current() when called externally; lets the
+    song loop skip "✅ Done" messages for manually-stopped songs.
 """
 
 import asyncio
 import os
-import json
-from typing import Optional
+from typing import Optional, Callable, Awaitable
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Source definitions — tried in order, first success wins
+# Sources — tried in order, first success wins
 # ─────────────────────────────────────────────────────────────────────────────
 SOURCES = [
     {
         "label": "SoundCloud",
         "query": "scsearch1:{song}",
-        "extra": [],                    # SoundCloud needs no extra flags
+        "extra": [],
     },
     {
         "label": "YouTube",
         "query": "ytsearch1:{song}",
-        "extra": [                      # Try multiple clients in sequence
+        "extra": [
             "--extractor-args", "youtube:player_client=tv_embedded,ios,mweb",
         ],
     },
 ]
 
-# Lofi fallback: use a direct SoundCloud URL for 24/7 lofi stream
-# This avoids search entirely for the fallback, making it rock-solid
-LOFI_QUERY = "scsearch1:lofi hip hop radio beats to study relax"
+TITLE_TIMEOUT = 30  # seconds before giving up on a source
 
-# How long to wait for a title resolution before giving up on a source
-TITLE_TIMEOUT = 30  # seconds
-
-# Global semaphore: only ONE song search at a time.
-# Prevents zombie yt-dlp processes from piling up during reconnect storms.
-# If a search is already running and a new one is requested, the new one
-# waits instead of spawning another yt-dlp process.
-_search_sem: asyncio.Semaphore | None = None
+# One search at a time — prevents zombie yt-dlp pile-up during reconnect storms
+_search_sem: Optional[asyncio.Semaphore] = None
 
 
 def _get_search_sem() -> asyncio.Semaphore:
-    """Lazily initialize the semaphore (needs running event loop)."""
     global _search_sem
     if _search_sem is None:
         _search_sem = asyncio.Semaphore(1)
     return _search_sem
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# AudioBroadcaster
+# ─────────────────────────────────────────────────────────────────────────────
+
 class AudioBroadcaster:
     """
-    Broadcasts an audio stream (MP3) to all connected HTTP clients.
-    Works like an internet radio station — clients connect to /stream
-    and receive live MP3 data via HTTP chunked transfer.
+    Internet-radio-style broadcaster: yt-dlp → ffmpeg → HTTP chunked MP3.
+
+    State flags:
+      _is_searching : True while _find_source() is running
+      _is_streaming : True while ffmpeg is broadcasting audio
+      _interrupted  : True if stop_current() was called externally mid-play;
+                      lets the song loop skip the "Done" announcement
     """
 
     def __init__(self):
@@ -77,17 +82,32 @@ class AudioBroadcaster:
         self._lock = asyncio.Lock()
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._ytdlp_proc: Optional[asyncio.subprocess.Process] = None
-        self._playing = False
+
+        self._is_searching = False
+        self._is_streaming = False
+        self._interrupted = False
         self._current_title = ""
         self._current_source = ""
+
+    # ── Public state ──────────────────────────────────────────────────────────
+
+    @property
+    def is_active(self) -> bool:
+        """True from search-start to stream-end (use this instead of is_playing)."""
+        return self._is_searching or self._is_streaming
+
+    @property
+    def is_playing(self) -> bool:
+        """True only while audio is actually streaming (not during search)."""
+        return self._is_streaming
+
+    @property
+    def was_interrupted(self) -> bool:
+        return self._interrupted
 
     @property
     def listener_count(self) -> int:
         return len(self._client_queues)
-
-    @property
-    def is_playing(self) -> bool:
-        return self._playing
 
     @property
     def current_title(self) -> str:
@@ -108,8 +128,6 @@ class AudioBroadcaster:
                 "Cache-Control": "no-cache, no-store",
                 "icy-name": "Highrise DJ Bot Radio",
                 "icy-genre": "Various",
-                "icy-pub": "1",
-                "icy-br": "128",
                 "Connection": "keep-alive",
                 "Transfer-Encoding": "chunked",
             }
@@ -143,7 +161,7 @@ class AudioBroadcaster:
 
         return response
 
-    async def broadcast(self, chunk: bytes):
+    async def _broadcast(self, chunk: bytes):
         async with self._lock:
             queues = list(self._client_queues.values())
         for q in queues:
@@ -154,38 +172,53 @@ class AudioBroadcaster:
 
     # ── Playback Control ──────────────────────────────────────────────────────
 
-    async def stop_current(self):
-        """Kill any running ffmpeg and yt-dlp processes."""
-        for proc_attr in ("_proc", "_ytdlp_proc"):
-            p = getattr(self, proc_attr)
+    async def stop_current(self, interrupted: bool = True):
+        """
+        Kill any running ffmpeg and yt-dlp processes.
+
+        interrupted=True (default): marks the stop as external so the song loop
+        skips the "Done" announcement for a manually-skipped song.
+        """
+        if interrupted:
+            self._interrupted = True
+
+        for attr in ("_proc", "_ytdlp_proc"):
+            p = getattr(self, attr)
             if p and p.returncode is None:
                 try:
                     p.kill()
                     await p.wait()
                 except Exception:
                     pass
-            setattr(self, proc_attr, None)
+            setattr(self, attr, None)
 
-        self._playing = False
+        self._is_streaming = False
+        self._is_searching = False
         self._current_title = ""
         self._current_source = ""
 
     async def play(
         self,
         song_name: str,
-        on_found=None,          # Optional async callback: on_found(title, source_label)
+        on_found: Optional[Callable[[str, str], Awaitable[None]]] = None,
     ) -> tuple[bool, str]:
         """
-        Finds and streams a song. Returns (success, title).
+        Search for song_name and stream it. Returns (success, title).
 
-        on_found: if provided, called with (title, source_label) the moment search
-                  succeeds and streaming is about to begin — perfect for announcing
-                  "Now playing" without guessing before search or announcing after.
+        on_found(title, source_label): called the instant search succeeds and
+        streaming is about to begin — ideal for "Now playing" announcements.
         """
-        await self.stop_current()
+        # Reset interrupted flag for this new play() call
+        self._interrupted = False
+        await self.stop_current(interrupted=False)
 
-        # ── Step 1: Find which source has the song ────────────────────────────
-        found = await _find_source(song_name)
+        # ── Search ────────────────────────────────────────────────────────────
+        self._is_searching = True
+        try:
+            found = await _find_source(song_name)
+        finally:
+            self._is_searching = False
+
         if not found:
             print(f"[RADIO] '{song_name}' — not found on any source.")
             return False, song_name
@@ -193,111 +226,86 @@ class AudioBroadcaster:
         title, direct_url, extra_args, source_label = found
         print(f"[RADIO] '{title}' found via {source_label} — starting stream...")
 
-        # Notify caller that song was found and streaming is starting
+        self._current_title = title
+        self._current_source = source_label
+
+        # Fire the "Now playing" callback before we start the subprocess
         if on_found:
             try:
                 await on_found(title, source_label)
             except Exception as e:
-                print(f"[RADIO] on_found callback error: {e}")
+                print(f"[RADIO] on_found error: {e}")
 
-        self._playing = True
-        self._current_title = title
-        self._current_source = source_label
-
+        # ── Stream ────────────────────────────────────────────────────────────
+        self._is_streaming = True
         try:
-            # ── Step 2: Create an OS-level pipe so yt-dlp → ffmpeg works ─────
-            # asyncio proc.stdout is a StreamReader (no .fileno()), so we CANNOT
-            # pass it as stdin to another subprocess — os.pipe() gives real fds.
+            # OS pipe: gives real fds with .fileno() — asyncio StreamReader
+            # cannot be passed as stdin to another subprocess.
             pipe_read_fd, pipe_write_fd = os.pipe()
 
-            # ── Step 3: yt-dlp writes audio to the write end of the pipe ──────
-            ytdlp_cmd = [
-                "yt-dlp",
-                "-o", "-",
-                "-q",
-                "--no-warnings",
-                "--no-playlist",
-                "-f", "bestaudio/best",
-                *extra_args,
-                direct_url,          # direct URL from title check — no second search!
-            ]
             try:
                 ytdlp_proc = await asyncio.create_subprocess_exec(
-                    *ytdlp_cmd,
-                    stdout=pipe_write_fd,   # Real OS fd — has fileno(), works!
+                    "yt-dlp", "-o", "-", "-q", "--no-warnings", "--no-playlist",
+                    "-f", "bestaudio/best", *extra_args, direct_url,
+                    stdout=pipe_write_fd,
                     stderr=asyncio.subprocess.PIPE,
                 )
             finally:
-                # Always close parent's copy of write end so ffmpeg gets EOF
-                # when yt-dlp finishes, even if yt-dlp failed to start
-                os.close(pipe_write_fd)
+                os.close(pipe_write_fd)  # parent closes its copy
             self._ytdlp_proc = ytdlp_proc
 
-            # ── Step 4: ffmpeg reads from the read end of the pipe ────────────
-            ffmpeg_cmd = [
-                "ffmpeg",
-                "-i", "pipe:0",
-                "-vn",
-                "-acodec", "libmp3lame",
-                "-ab", "128k",
-                "-ar", "44100",
-                "-f", "mp3",
-                "-loglevel", "error",
-                "pipe:1",
-            ]
             try:
                 ffmpeg_proc = await asyncio.create_subprocess_exec(
-                    *ffmpeg_cmd,
-                    stdin=pipe_read_fd,     # Real OS fd — has fileno(), works!
+                    "ffmpeg", "-i", "pipe:0", "-vn",
+                    "-acodec", "libmp3lame", "-ab", "128k", "-ar", "44100",
+                    "-f", "mp3", "-loglevel", "error", "pipe:1",
+                    stdin=pipe_read_fd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
             finally:
-                # Always close parent's copy of read end
-                os.close(pipe_read_fd)
+                os.close(pipe_read_fd)  # parent closes its copy
             self._proc = ffmpeg_proc
 
-            # ── Step 4: Broadcast audio chunks ───────────────────────────────
             chunks_sent = 0
             while True:
                 chunk = await ffmpeg_proc.stdout.read(8192)
                 if not chunk:
                     break
-                await self.broadcast(chunk)
+                await self._broadcast(chunk)
                 chunks_sent += 1
 
             await ffmpeg_proc.wait()
 
-            # Log any errors
-            if ffmpeg_proc.returncode not in (0, None):
+            if ffmpeg_proc.returncode not in (0, None, -9):
                 err = await ffmpeg_proc.stderr.read(2048)
-                print(f"[FFMPEG ERR] code={ffmpeg_proc.returncode} :: {err.decode('utf-8', errors='replace').strip()}")
+                print(f"[FFMPEG ERR] {err.decode(errors='replace').strip()}")
 
             try:
                 if ytdlp_proc.returncode is None:
                     ytdlp_proc.kill()
                     await ytdlp_proc.wait()
-                elif ytdlp_proc.returncode != 0:
+                elif ytdlp_proc.returncode not in (0, -9):
                     err = await ytdlp_proc.stderr.read(2048)
-                    print(f"[YTDLP ERR] code={ytdlp_proc.returncode} :: {err.decode('utf-8', errors='replace').strip()}")
+                    print(f"[YTDLP ERR] {err.decode(errors='replace').strip()}")
             except Exception:
                 pass
 
             if chunks_sent == 0:
-                print(f"[RADIO] Stream produced 0 bytes for '{title}' [{source_label}] — likely blocked/invalid.")
+                print(f"[RADIO] 0 bytes for '{title}' — stream failed or was killed before data.")
                 return False, title
 
-            print(f"[RADIO] Done: '{title}' [{source_label}] — {chunks_sent} chunks streamed.")
+            print(f"[RADIO] Done: '{title}' [{source_label}] — {chunks_sent} chunks.")
             return True, title
 
         except asyncio.CancelledError:
-            await self.stop_current()
+            await self.stop_current(interrupted=True)
             raise
         except Exception as e:
             print(f"[RADIO] Playback error for '{song_name}': {e}")
             return False, song_name
         finally:
-            self._playing = False
+            self._is_streaming = False
             self._proc = None
             self._ytdlp_proc = None
             self._current_title = ""
@@ -305,20 +313,13 @@ class AudioBroadcaster:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Source Resolution
+# Source resolution
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _find_source(song_name: str) -> Optional[tuple[str, str, list, str]]:
     """
-    Tries each source in SOURCES order.
     Returns (title, direct_url, extra_args, source_label) or None.
-
-    Fetches BOTH title and webpage_url in a single yt-dlp call so that
-    the stream subprocess uses the exact URL that was found — preventing
-    any title/audio mismatch from two separate searches.
-
-    Protected by a semaphore so only 1 search runs at a time — prevents
-    zombie yt-dlp process buildup during bot reconnect cycles.
+    Semaphore-protected: only 1 search runs at a time.
     """
     sem = _get_search_sem()
     async with sem:
@@ -328,43 +329,34 @@ async def _find_source(song_name: str) -> Optional[tuple[str, str, list, str]]:
             extra = source["extra"]
 
             print(f"[SEARCH] [{label}] Checking: {song_name!r}...")
-
             result = await _get_title_and_url(query, extra, label)
             if result:
                 title, url = result
-                print(f"[SEARCH] [{label}] Found: {title!r}")
-                print(f"[SEARCH] [{label}] URL: {url}")
+                print(f"[SEARCH] [{label}] Found: {title!r} → {url}")
                 return title, url, extra, label
             else:
-                print(f"[SEARCH] [{label}] Not found — trying next source.")
+                print(f"[SEARCH] [{label}] Not found.")
 
     return None
 
 
 async def _get_title_and_url(
-    query: str,
-    extra_args: list,
-    label: str,
+    query: str, extra_args: list, label: str
 ) -> Optional[tuple[str, str]]:
     """
-    Runs yt-dlp with two --print fields to get BOTH title and webpage_url
-    in a single call. Returns (title, direct_url) or None.
-
-    Handles CancelledError by killing the subprocess before propagating —
-    prevents zombie yt-dlp processes when the song loop is cancelled.
+    Single yt-dlp call that returns BOTH %(title)s AND %(webpage_url)s.
+    Using the direct URL for streaming guarantees title == audio.
+    Kills subprocess on CancelledError to prevent zombies.
     """
     cmd = [
         "yt-dlp",
         "--skip-download",
         "--print", "%(title)s",
         "--print", "%(webpage_url)s",
-        "-q",
-        "--no-warnings",
-        "--no-playlist",
+        "-q", "--no-warnings", "--no-playlist",
         *extra_args,
         query,
     ]
-
     proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -372,51 +364,40 @@ async def _get_title_and_url(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-
         try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=TITLE_TIMEOUT
-            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=TITLE_TIMEOUT)
         except asyncio.TimeoutError:
             _kill_proc(proc)
-            print(f"[SEARCH] [{label}] Timed out after {TITLE_TIMEOUT}s.")
+            print(f"[SEARCH] [{label}] Timed out.")
             return None
         except asyncio.CancelledError:
-            # Task was cancelled (bot reconnecting) — kill subprocess immediately
-            # so it doesn't linger as a zombie consuming resources.
             _kill_proc(proc)
-            raise   # Re-raise so the song loop exits cleanly
+            raise  # propagate so song loop exits cleanly
 
         if proc.returncode != 0:
-            err = stderr.decode("utf-8", errors="replace").strip()
-            if err and "ERROR" in err:
-                print(f"[SEARCH] [{label}] error: {err[:200]}")
+            err = stderr.decode(errors="replace").strip()
+            if "ERROR" in err:
+                print(f"[SEARCH] [{label}] {err[:200]}")
             return None
 
-        lines = stdout.decode("utf-8", errors="replace").strip().split("\n")
-        # Two --print fields → yt-dlp outputs them on consecutive lines:
-        #   line 0: title
-        #   line 1: webpage_url
+        lines = stdout.decode(errors="replace").strip().split("\n")
         if len(lines) < 2:
             return None
         title = lines[0].strip()
         url = lines[1].strip()
-        if not title or not url or url == "NA":
-            return None
-        return title, url
+        return (title, url) if title and url and url != "NA" else None
 
     except FileNotFoundError:
-        print("[SEARCH] ERROR: yt-dlp not found in PATH! Check your Dockerfile.")
+        print("[SEARCH] ERROR: yt-dlp not in PATH.")
         return None
     except asyncio.CancelledError:
-        raise   # Always propagate cancellation
+        raise
     except Exception as e:
-        print(f"[SEARCH] [{label}] Unexpected error: {e}")
+        print(f"[SEARCH] [{label}] Error: {e}")
         return None
 
 
 def _kill_proc(proc) -> None:
-    """Kill a subprocess silently — used for cleanup on timeout/cancellation."""
     try:
         if proc and proc.returncode is None:
             proc.kill()

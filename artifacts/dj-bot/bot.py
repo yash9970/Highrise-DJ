@@ -15,10 +15,6 @@ DANCE_EMOTES = [
     "dance-tiktok2",
 ]
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Trending songs to auto-play when the queue is empty.
-# Add / remove entries freely — the bot cycles through them in order.
-# ─────────────────────────────────────────────────────────────────────────────
 TRENDING_SONGS = [
     "APT. Rose Bruno Mars",
     "Luther Kendrick Lamar SZA",
@@ -60,20 +56,19 @@ HELP_LINES = [
     "!dj play <song> — Queue a song",
     "!dj queue — Show song queue",
     "!dj np — Now playing",
-    "!dj skip — Skip song (master)",
+    "!dj skip — Skip current song (mod/master)",
     "!dj clear — Clear queue (master)",
-    "!dj viplist — Show VIPs & mods from helper bot",
-    "!dj inventory — Bot outfit (master)",
+    "!dj viplist — VIP/mod list (master)",
     "!dj listeners — Listener count (master)",
-    "!dj help — This message (master)",
+    "!dj help — This message",
 ]
 
+# Module-level: survives bot reconnects so trending index doesn't reset to 0
 _active_tasks: list[asyncio.Task] = []
-_trending_index: int = 0   # module-level so it survives bot reconnects
+_trending_index: int = 0
 
 
 def _cancel_all_tasks():
-    """Cancel all previously registered background tasks."""
     for t in list(_active_tasks):
         if not t.done():
             t.cancel()
@@ -87,44 +82,43 @@ class DJBot(BaseBot):
         self._song_task: asyncio.Task | None = None
         self._dance_task: asyncio.Task | None = None
         self._talk_task: asyncio.Task | None = None
+        # True only while the fallback/trending song is playing
+        # (not queued requests — so the play handler knows to interrupt)
         self._is_fallback_playing: bool = False
-        # Note: trending index is module-level (_trending_index) so it
-        # keeps its position across bot reconnects.
 
     async def on_start(self, session_metadata: SessionMetadata) -> None:
         self._owner_id = session_metadata.room_info.owner_id
         print(f"[BOT] DJ Bot started. Bot ID: {session_metadata.user_id}")
         print(f"[BOT] Room owner ID: {self._owner_id} (this is the master)")
 
-        # Cancel any tasks from a previous bot instance that may still be running
         _cancel_all_tasks()
 
         init_db()
-
         await asyncio.sleep(2)
 
         try:
             await self.highrise.teleport(session_metadata.user_id, BOT_POSITION)
-            print(f"[BOT] Teleported to position.")
+            print("[BOT] Teleported to position.")
         except Exception as e:
             print(f"[BOT] Teleport failed: {e}")
 
         await asyncio.sleep(2)
 
         self._dance_task = asyncio.create_task(self._dance_loop())
-        self._talk_task = asyncio.create_task(self._talk_loop())
-        self._song_task = asyncio.create_task(self._song_loop())
-
+        self._talk_task  = asyncio.create_task(self._talk_loop())
+        self._song_task  = asyncio.create_task(self._song_loop())
         _active_tasks.extend([self._dance_task, self._talk_task, self._song_task])
-        print(f"[BOT] Background tasks started (dance, talk, song).")
+        print("[BOT] Background tasks started (dance, talk, song).")
+
+    # ── Background loops ──────────────────────────────────────────────────────
 
     async def _dance_loop(self):
         i = 0
         while True:
             try:
-                emote_id = DANCE_EMOTES[i % len(DANCE_EMOTES)]
-                await self.highrise.send_emote(emote_id)
-                print(f"[BOT] Dancing: {emote_id}")
+                emote = DANCE_EMOTES[i % len(DANCE_EMOTES)]
+                await self.highrise.send_emote(emote)
+                print(f"[BOT] Dancing: {emote}")
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -152,24 +146,40 @@ class DJBot(BaseBot):
             await asyncio.sleep(30)
 
     async def _song_loop(self):
+        """
+        Single song loop — never spawns a sibling task.
+        Runs forever picking queued songs first, then trending fallbacks.
+
+        KEY INVARIANT: only this one task ever calls broadcaster.play().
+        The skip/interrupt commands just call broadcaster.stop_current() to
+        break the current play() call — this loop then naturally moves on.
+        """
+        global _trending_index
+
         while True:
             try:
                 next_song = get_next_song()
-                if next_song:
-                    song_name = next_song["song_name"]
-                    requested_by = next_song["requested_by"]
-                    song_id = next_song["id"]
 
-                    # Announce immediately so user knows their request was received
+                # ── A queued request ──────────────────────────────────────
+                if next_song:
+                    song_name    = next_song["song_name"]
+                    requested_by = next_song["requested_by"]
+                    song_id      = next_song["id"]
+
+                    self._is_fallback_playing = False
+
                     try:
-                        await self.highrise.chat(f"🔍 Searching for: {song_name} (by {requested_by})...")
+                        await self.highrise.chat(
+                            f"🔍 Searching: {song_name} (requested by {requested_by})..."
+                        )
                     except Exception:
                         pass
 
                     print(f"[SONG] Playing queued song: {song_name!r} (id={song_id})")
 
-                    # on_found fires the moment search succeeds and streaming starts
-                    async def _on_queued_found(title, source):
+                    # Capture song_name in closure to avoid late-binding issues
+                    _sn = song_name
+                    async def _on_queued_found(title: str, source: str, _s=_sn):
                         try:
                             await self.highrise.chat(f"▶️ Now playing: {title}")
                         except Exception:
@@ -177,44 +187,51 @@ class DJBot(BaseBot):
 
                     success, title = await broadcaster.play(song_name, on_found=_on_queued_found)
 
-                    if success:
+                    # Only announce "Done" if the song actually finished naturally
+                    # (not if it was skipped/interrupted externally)
+                    if success and not broadcaster.was_interrupted:
                         print(f"[SONG] Finished: {title!r}")
                         try:
-                            await self.highrise.chat(f"✅ Done: {title} — type !dj play <song> to request next!")
+                            await self.highrise.chat(
+                                f"✅ Done: {title} — type !dj play <song> to request next!"
+                            )
                         except Exception:
                             pass
-                    else:
-                        print(f"[SONG] Could not find: {song_name!r} — skipping")
+                    elif not success and not broadcaster.was_interrupted:
+                        print(f"[SONG] Not found: {song_name!r} — skipping")
                         try:
                             await self.highrise.chat(f"❌ Could not find '{song_name}'. Skipping!")
                         except Exception:
                             pass
 
+                    # Always delete from queue when done, whether skipped or finished
                     delete_song(song_id)
                     await asyncio.sleep(1)
 
+                # ── Fallback trending ─────────────────────────────────────
                 else:
-                    # ── Queue is empty — auto-play next trending song ─────────
-                    global _trending_index
                     trending_song = TRENDING_SONGS[_trending_index % len(TRENDING_SONGS)]
                     _trending_index += 1
 
-                    print(f"[SONG] Queue empty — picking trending: {trending_song!r}")
-
+                    print(f"[SONG] Queue empty — auto-playing: {trending_song!r}")
                     self._is_fallback_playing = True
+
                     try:
-                        # on_found fires when search succeeds, BEFORE streaming starts
-                        # This is the correct time to announce — not after (confusing)
-                        async def _on_trending_found(title, source):
+                        # Capture for closure
+                        _ts = trending_song
+                        async def _on_trending_found(title: str, source: str, _t=_ts):
                             try:
-                                await self.highrise.chat(f"🎶 Auto-playing: {title} 🔥  |  !dj play <song> to request")
+                                await self.highrise.chat(
+                                    f"🎶 Now playing: {title} 🔥  |  !dj play <song> to request!"
+                                )
                             except Exception:
                                 pass
 
                         success, title = await broadcaster.play(
                             trending_song, on_found=_on_trending_found
                         )
-                        if not success:
+
+                        if not success and not broadcaster.was_interrupted:
                             print(f"[SONG] Trending failed for {trending_song!r}. Backing off 30s.")
                             await asyncio.sleep(30)
                         else:
@@ -224,7 +241,7 @@ class DJBot(BaseBot):
                         self._is_fallback_playing = False
                         raise
                     except Exception as e:
-                        print(f"[SONG] Trending playback error: {e}")
+                        print(f"[SONG] Trending error: {e}")
                         await asyncio.sleep(30)
                     finally:
                         self._is_fallback_playing = False
@@ -236,9 +253,10 @@ class DJBot(BaseBot):
                 print(f"[BOT] Song loop error: {e}")
                 await asyncio.sleep(5)
 
+    # ── Chat commands ─────────────────────────────────────────────────────────
+
     async def on_chat(self, user: User, message: str) -> None:
         msg = message.strip()
-
         print(f"[CHAT] {user.username}: {msg}")
 
         if not msg.lower().startswith("!dj"):
@@ -249,13 +267,14 @@ class DJBot(BaseBot):
             return
 
         command = parts[1].lower()
-        args = parts[2].strip() if len(parts) > 2 else ""
+        args    = parts[2].strip() if len(parts) > 2 else ""
 
-        is_master = (user.id == self._owner_id)
-        print(f"[CMD] Command='{command}' from '{user.username}' id={user.id} (is_master={is_master})")
-
+        is_master  = (user.id == self._owner_id)
         authorized = await self._is_authorized(user, is_master)
 
+        print(f"[CMD] '{command}' from '{user.username}' (master={is_master})")
+
+        # ── help ─────────────────────────────────────────────────────────────
         if command == "help":
             if is_master:
                 await self._reply_lines(HELP_LINES)
@@ -263,6 +282,7 @@ class DJBot(BaseBot):
                 await self._reply(f"@{user.username} Only the master can use !dj help.")
             return
 
+        # ── inventory ────────────────────────────────────────────────────────
         if command == "inventory":
             if is_master:
                 await self._handle_inventory(user, args)
@@ -270,73 +290,102 @@ class DJBot(BaseBot):
                 await self._reply(f"@{user.username} Only the master can use !dj inventory.")
             return
 
+        # ── play ─────────────────────────────────────────────────────────────
         if command == "play":
             if not authorized:
-                await self._reply(f"@{user.username} Only VIPs, mods, designers, or the master can request songs.")
+                await self._reply(
+                    f"@{user.username} Only VIPs, mods, or the master can request songs."
+                )
                 return
             if not args:
                 await self._reply(f"@{user.username} Usage: !dj play <song name>")
                 return
+
             add_song(args, user.username)
+
             if self._is_fallback_playing:
-                await broadcaster.stop_current()
-                await self._reply(f"Interrupting radio to play '{args}'! (by {user.username})")
+                # Interrupt trending — the song loop will pick up the queued song next
+                await broadcaster.stop_current(interrupted=True)
+                await self._reply(f"⏭️ Interrupting radio — '{args}' loading next! (by {user.username})")
             else:
+                # A queued song is either searching or playing
                 queue = get_queue()
-                position = len(queue)
-                if broadcaster.is_playing:
-                    await self._reply(f"Added '{args}' to the queue at position {position}! (by {user.username})")
+                pos = len(queue)
+                if broadcaster.is_active:
+                    await self._reply(
+                        f"🎵 Added '{args}' to queue at position {pos}! (by {user.username})"
+                    )
                 else:
-                    await self._reply(f"Added '{args}' — playing next! (by {user.username})")
+                    await self._reply(f"🎵 Added '{args}' — loading next! (by {user.username})")
             return
 
+        # ── queue ────────────────────────────────────────────────────────────
         if command == "queue":
             if not authorized:
-                await self._reply(f"@{user.username} Only VIPs, mods, designers, or the master can view the queue.")
+                await self._reply(
+                    f"@{user.username} Only VIPs, mods, or the master can view the queue."
+                )
                 return
             queue = get_queue()
             if not queue:
-                await self._reply("The queue is empty! Request a song with !dj play <song name>")
+                await self._reply("Queue is empty! Use !dj play <song> to request.")
             else:
-                lines = ["Song Queue:"]
+                lines = ["📋 Song Queue:"]
                 for i, song in enumerate(queue, 1):
-                    marker = " (NOW PLAYING)" if i == 1 and broadcaster.is_playing else ""
-                    lines.append(f"{i}. {song['song_name']} by {song['requested_by']}{marker}")
+                    # Position 1 = currently playing/searching if broadcaster is active
+                    if i == 1 and broadcaster.is_active:
+                        status = " ▶️ PLAYING" if broadcaster.is_playing else " 🔍 SEARCHING"
+                    else:
+                        status = ""
+                    lines.append(f"{i}. {song['song_name']} by {song['requested_by']}{status}")
                 await self._reply("\n".join(lines))
             return
 
+        # ── np (now playing) ─────────────────────────────────────────────────
         if command in ("nowplaying", "np"):
             if broadcaster.is_playing and broadcaster.current_title:
-                await self._reply(f"Now playing: {broadcaster.current_title}")
+                await self._reply(f"▶️ Now playing: {broadcaster.current_title}")
+            elif broadcaster.is_active:
+                await self._reply("🔍 Searching for next song...")
             else:
-                await self._reply("Nothing is playing right now.")
+                await self._reply("Nothing is playing right now. Use !dj play <song>!")
             return
 
+        # ── skip ─────────────────────────────────────────────────────────────
         if command == "skip":
             if not await self._is_bot_mod(user, is_master):
-                await self._reply(f"@{user.username} Only mods can skip songs.")
+                await self._reply(f"@{user.username} Only mods or the master can skip songs.")
                 return
+
+            # FIX: Do NOT spawn a new _song_loop task. Just stop the current
+            # stream — the existing loop will naturally move to the next song.
+            # Spawning a new task was the root cause of concurrent loops,
+            # duplicate announcements, and title/audio mismatches.
             next_song = get_next_song()
             if next_song:
                 delete_song(next_song["id"])
-            await broadcaster.stop_current()
-            await self._reply("Skipped! Loading next song...")
-            if self._song_task and not self._song_task.done():
-                self._song_task.cancel()
-            self._song_task = asyncio.create_task(self._song_loop())
-            _active_tasks.append(self._song_task)
+                await self._reply(f"⏭️ Skipped! Loading next song...")
+            else:
+                await self._reply(f"⏭️ Skipped fallback radio!")
+
+            await broadcaster.stop_current(interrupted=True)
+            # The existing _song_loop is blocked at await broadcaster.play().
+            # stop_current() kills the subprocess, play() returns, and the loop
+            # naturally picks up the next song. No new task needed.
             return
 
+        # ── clear ────────────────────────────────────────────────────────────
         if command == "clear":
             if not is_master:
                 await self._reply(f"@{user.username} Only the master can clear the queue.")
                 return
             from db import clear_queue
             clear_queue()
-            await broadcaster.stop_current()
-            await self._reply("Queue cleared and playback stopped!")
+            await broadcaster.stop_current(interrupted=True)
+            await self._reply("🗑️ Queue cleared and playback stopped!")
             return
 
+        # ── viplist ──────────────────────────────────────────────────────────
         if command == "viplist":
             if not is_master:
                 await self._reply(f"@{user.username} Only the master can use !dj viplist.")
@@ -344,66 +393,50 @@ class DJBot(BaseBot):
             await self._handle_viplist()
             return
 
+        # ── listeners ────────────────────────────────────────────────────────
         if command == "listeners":
             if is_master:
-                count = broadcaster.listener_count
-                await self._reply(f"Radio listeners: {count}")
+                await self._reply(f"📻 Radio listeners: {broadcaster.listener_count}")
             return
+
+    # ── Auth helpers ──────────────────────────────────────────────────────────
 
     async def _is_bot_mod(self, user: User, is_master: bool) -> bool:
         if is_master:
             return True
-
         try:
             room_users = await self.highrise.get_room_users()
-            for room_user, position in room_users.content:
+            for room_user, _ in room_users.content:
                 if room_user.id == user.id:
-                    privileges = getattr(room_user, "privilege", None)
-                    print(f"[AUTH] {user.username} privilege: {privileges}")
-                    if privileges in ("moderator", "designer"):
+                    priv = getattr(room_user, "privilege", None)
+                    if priv in ("moderator", "designer"):
                         return True
                     break
         except Exception as e:
             print(f"[BOT] Could not check room privileges: {e}")
 
         from vip_checker import is_mod
-        mod_status = await is_mod(user.username)
-        print(f"[AUTH] {user.username} MOD status: {mod_status}")
-        return mod_status
+        return await is_mod(user.username)
 
     async def _is_authorized(self, user: User, is_master: bool) -> bool:
         if await self._is_bot_mod(user, is_master):
             return True
-
         from vip_checker import is_vip
-        vip_status = await is_vip(user.username)
-        print(f"[AUTH] {user.username} VIP status: {vip_status}")
-        return vip_status
+        return await is_vip(user.username)
+
+    # ── Feature handlers ──────────────────────────────────────────────────────
 
     async def _handle_viplist(self):
-        """Fetch VIPs and mods from the helper bot and show status + list."""
         from vip_checker import get_vips, get_mods, VIP_API_BASE
-
         try:
             vips = await get_vips()
             mods = await get_mods()
-
-            status_line = f"Helper bot ({VIP_API_BASE}): ✅ online"
-
-            lines = [status_line]
-
-            if vips:
-                lines.append(f"VIPs ({len(vips)}): " + ", ".join(vips))
-            else:
-                lines.append("VIPs: none")
-
-            if mods:
-                lines.append(f"Mods ({len(mods)}): " + ", ".join(mods))
-            else:
-                lines.append("Mods: none")
-
+            lines = [
+                f"Helper bot ({VIP_API_BASE}): ✅ online",
+                f"VIPs ({len(vips)}): " + (", ".join(vips) if vips else "none"),
+                f"Mods ({len(mods)}): " + (", ".join(mods) if mods else "none"),
+            ]
             await self._reply_lines(lines)
-
         except Exception as e:
             print(f"[BOT] viplist error: {e}")
             await self._reply(f"❌ Helper bot unreachable: {e}")
@@ -416,21 +449,21 @@ class DJBot(BaseBot):
                 item_names = [getattr(item, "id", str(item)) for item in items[:15]]
                 await self._reply("Bot outfit:\n" + "\n".join(item_names))
             else:
-                await self._reply("No outfit items found. Change the bot's outfit in-game.")
+                await self._reply("No outfit items found.")
         except Exception as e:
             print(f"[BOT] Inventory error: {e}")
-            await self._reply("To change the bot's outfit, equip items in-game while logged in as the bot account.")
+            await self._reply("Equip items in-game while logged in as the bot account.")
+
+    # ── Messaging helpers ─────────────────────────────────────────────────────
 
     async def _reply(self, message: str):
-        MAX_LEN = 200
-        if len(message) <= MAX_LEN:
+        if len(message) <= 200:
             try:
                 await self.highrise.chat(message)
             except Exception as e:
                 print(f"[BOT] Failed to send message: {e}")
         else:
-            lines = message.split("\n")
-            await self._reply_lines(lines)
+            await self._reply_lines(message.split("\n"))
 
     async def _reply_lines(self, lines: list[str]):
         for line in lines:
@@ -441,6 +474,8 @@ class DJBot(BaseBot):
                 await asyncio.sleep(0.6)
             except Exception as e:
                 print(f"[BOT] Failed to send line: {e}")
+
+    # ── Highrise event handlers ───────────────────────────────────────────────
 
     async def on_user_join(self, user: User, position: Position | AnchorPosition) -> None:
         print(f"[BOT] User joined: {user.username}")
