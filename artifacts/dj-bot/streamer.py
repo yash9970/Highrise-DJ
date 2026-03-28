@@ -256,7 +256,7 @@ class AudioBroadcaster:
 
             try:
                 ffmpeg_proc = await asyncio.create_subprocess_exec(
-                    "ffmpeg", "-i", "pipe:0", "-vn",
+                    "ffmpeg", "-re", "-i", "pipe:0", "-vn",
                     "-acodec", "libmp3lame", "-ab", "128k", "-ar", "44100",
                     "-f", "mp3", "-loglevel", "error", "pipe:1",
                     stdin=pipe_read_fd,
