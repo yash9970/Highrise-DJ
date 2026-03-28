@@ -19,6 +19,7 @@ Key design:
 """
 
 import asyncio
+import os
 import json
 from typing import Optional
 
@@ -178,7 +179,12 @@ class AudioBroadcaster:
         self._current_source = source_label
 
         try:
-            # ── Step 2: yt-dlp → stdout ───────────────────────────────────────
+            # ── Step 2: Create an OS-level pipe so yt-dlp → ffmpeg works ─────
+            # asyncio proc.stdout is a StreamReader (no .fileno()), so we CANNOT
+            # pass it as stdin to another subprocess — os.pipe() gives real fds.
+            pipe_read_fd, pipe_write_fd = os.pipe()
+
+            # ── Step 3: yt-dlp writes audio to the write end of the pipe ──────
             ytdlp_cmd = [
                 "yt-dlp",
                 "-o", "-",
@@ -189,14 +195,19 @@ class AudioBroadcaster:
                 *extra_args,
                 ytdlp_query,
             ]
-            ytdlp_proc = await asyncio.create_subprocess_exec(
-                *ytdlp_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            try:
+                ytdlp_proc = await asyncio.create_subprocess_exec(
+                    *ytdlp_cmd,
+                    stdout=pipe_write_fd,   # Real OS fd — has fileno(), works!
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            finally:
+                # Always close parent's copy of write end so ffmpeg gets EOF
+                # when yt-dlp finishes, even if yt-dlp failed to start
+                os.close(pipe_write_fd)
             self._ytdlp_proc = ytdlp_proc
 
-            # ── Step 3: ffmpeg stdin ← yt-dlp stdout → MP3 on stdout ──────────
+            # ── Step 4: ffmpeg reads from the read end of the pipe ────────────
             ffmpeg_cmd = [
                 "ffmpeg",
                 "-reconnect", "1",
@@ -211,12 +222,16 @@ class AudioBroadcaster:
                 "-f", "mp3",
                 "pipe:1",
             ]
-            ffmpeg_proc = await asyncio.create_subprocess_exec(
-                *ffmpeg_cmd,
-                stdin=ytdlp_proc.stdout,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            try:
+                ffmpeg_proc = await asyncio.create_subprocess_exec(
+                    *ffmpeg_cmd,
+                    stdin=pipe_read_fd,     # Real OS fd — has fileno(), works!
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            finally:
+                # Always close parent's copy of read end
+                os.close(pipe_read_fd)
             self._proc = ffmpeg_proc
 
             # ── Step 4: Broadcast audio chunks ───────────────────────────────
