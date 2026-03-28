@@ -210,16 +210,13 @@ class AudioBroadcaster:
             # ── Step 4: ffmpeg reads from the read end of the pipe ────────────
             ffmpeg_cmd = [
                 "ffmpeg",
-                "-reconnect", "1",
-                "-reconnect_at_eof", "1",
-                "-reconnect_streamed", "1",
-                "-reconnect_delay_max", "5",
                 "-i", "pipe:0",
                 "-vn",
                 "-acodec", "libmp3lame",
                 "-ab", "128k",
                 "-ar", "44100",
                 "-f", "mp3",
+                "-loglevel", "error",
                 "pipe:1",
             ]
             try:
