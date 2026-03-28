@@ -6,8 +6,9 @@ VIP_API_BASE = "https://highrise-helper.onrender.com"
 
 async def get_vips() -> list[str]:
     try:
+        import time
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{VIP_API_BASE}/vips", timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with session.get(f"{VIP_API_BASE}/vips?t={int(time.time())}", timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if isinstance(data, list):
@@ -27,8 +28,9 @@ async def is_vip(username: str) -> bool:
 
 async def get_mods() -> list[str]:
     try:
+        import time
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{VIP_API_BASE}/mods", timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with session.get(f"{VIP_API_BASE}/mods?t={int(time.time())}", timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if isinstance(data, list):

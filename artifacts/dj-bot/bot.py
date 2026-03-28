@@ -113,8 +113,9 @@ class DJBot(BaseBot):
         self._dance_task = asyncio.create_task(self._dance_loop())
         self._talk_task  = asyncio.create_task(self._talk_loop())
         self._song_task  = asyncio.create_task(self._song_loop())
-        _active_tasks.extend([self._dance_task, self._talk_task, self._song_task])
-        print("[BOT] Background tasks started (dance, talk, song).")
+        self._auto_dance_task = asyncio.create_task(self._auto_dance_loop())
+        _active_tasks.extend([self._dance_task, self._talk_task, self._song_task, self._auto_dance_task])
+        print("[BOT] Background tasks started (dance, talk, song, auto-dance).")
 
     # ── Background loops ──────────────────────────────────────────────────────
 
@@ -150,6 +151,46 @@ class DJBot(BaseBot):
                 continue
             i += 1
             await asyncio.sleep(30)
+
+    async def _auto_dance_loop(self):
+        """
+        Periodically forces everyone inside the dance floor bounding box to dance.
+        """
+        import random
+        from db import get_floor_bounds
+        
+        await asyncio.sleep(5)  # Let bot initialize
+        while True:
+            try:
+                bounds = await asyncio.to_thread(get_floor_bounds)
+                if bounds:
+                    # Get all users in the room
+                    resp = await self.highrise.get_room_users()
+                    for room_user, pos in getattr(resp, "content", []):
+                        if room_user.id == self.highrise.my_id:
+                            continue  # Skip bot
+                        
+                        # Type-check position (could be AnchorPosition which doesn't have xyz)
+                        if isinstance(pos, Position):
+                            if (bounds["min_x"] <= pos.x <= bounds["max_x"] and
+                                bounds["min_y"] <= pos.y <= bounds["max_y"] and
+                                bounds["min_z"] <= pos.z <= bounds["max_z"]):
+                                
+                                # Send random dance emote to force them to dance
+                                emote = random.choice(DANCE_EMOTES)
+                                try:
+                                    # Target _them_ with the dance so their avatar plays it
+                                    await self.highrise.send_emote(emote, room_user.id)
+                                except Exception:
+                                    pass
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"[BOT] Auto-dance loop error: {e}")
+                await asyncio.sleep(5)
+            
+            # Run every 15 seconds to switch up their dance or catch new arrivals
+            await asyncio.sleep(15)
 
     async def _song_loop(self):
         """
@@ -405,6 +446,40 @@ class DJBot(BaseBot):
         if command == "listeners":
             if is_master:
                 await self._reply(f"📻 Radio listeners: {broadcaster.listener_count}")
+            return
+
+        # ── floor bounds ─────────────────────────────────────────────────────
+        if command == "floor":
+            if not is_master:
+                await self._reply(f"@{user.username} Only the master can set the dance floor!")
+                return
+            
+            if not args or args not in ("1", "2", "off"):
+                await self._reply("Usage: !dj floor 1 | !dj floor 2 | !dj floor off\nStand in corners to set bounds.")
+                return
+            
+            from db import set_floor_corner, clear_floor_bounds
+            if args == "off":
+                await asyncio.to_thread(clear_floor_bounds)
+                await self._reply("🛑 Auto-dance floor disabled.")
+                return
+                
+            # Get user's current position
+            resp = await self.highrise.get_room_users()
+            user_pos = None
+            for room_user, pos in getattr(resp, "content", []):
+                if room_user.id == user.id:
+                    user_pos = pos
+                    break
+            
+            if not isinstance(user_pos, Position):
+                await self._reply("❌ Couldn't find your coordinates (are you on an anchor?).")
+                return
+                
+            corner = int(args)
+            await asyncio.to_thread(set_floor_corner, corner, user_pos.x, user_pos.y, user_pos.z)
+            await self._reply(f"✅ Corner {corner} saved at ({user_pos.x:.1f}, {user_pos.y:.1f}, {user_pos.z:.1f})! "
+                              f"{'Set the other corner to activate!' if corner == 1 else 'Floor active!'}")
             return
 
     # ── Auth helpers ──────────────────────────────────────────────────────────
