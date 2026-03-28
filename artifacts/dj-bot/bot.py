@@ -69,6 +69,7 @@ HELP_LINES = [
 ]
 
 _active_tasks: list[asyncio.Task] = []
+_trending_index: int = 0   # module-level so it survives bot reconnects
 
 
 def _cancel_all_tasks():
@@ -87,7 +88,8 @@ class DJBot(BaseBot):
         self._dance_task: asyncio.Task | None = None
         self._talk_task: asyncio.Task | None = None
         self._is_fallback_playing: bool = False
-        self._trending_index: int = 0  # cycles through TRENDING_SONGS
+        # Note: trending index is module-level (_trending_index) so it
+        # keeps its position across bot reconnects.
 
     async def on_start(self, session_metadata: SessionMetadata) -> None:
         self._owner_id = session_metadata.room_info.owner_id
@@ -184,8 +186,9 @@ class DJBot(BaseBot):
 
                 else:
                     # ── Queue is empty — pick next trending song ─────────────
-                    trending_song = TRENDING_SONGS[self._trending_index % len(TRENDING_SONGS)]
-                    self._trending_index += 1
+                    global _trending_index
+                    trending_song = TRENDING_SONGS[_trending_index % len(TRENDING_SONGS)]
+                    _trending_index += 1
 
                     print(f"[SONG] Queue empty — picking trending: {trending_song!r}")
 

@@ -171,7 +171,7 @@ class AudioBroadcaster:
             print(f"[RADIO] '{song_name}' — not found on any source.")
             return False, song_name
 
-        title, ytdlp_query, extra_args, source_label = found
+        title, direct_url, extra_args, source_label = found
         print(f"[RADIO] '{title}' found via {source_label} — starting stream...")
 
         self._playing = True
@@ -193,7 +193,7 @@ class AudioBroadcaster:
                 "--no-playlist",
                 "-f", "bestaudio/best",
                 *extra_args,
-                ytdlp_query,
+                direct_url,          # direct URL from title check — no second search!
             ]
             try:
                 ytdlp_proc = await asyncio.create_subprocess_exec(
@@ -284,11 +284,12 @@ class AudioBroadcaster:
 
 async def _find_source(song_name: str) -> Optional[tuple[str, str, list, str]]:
     """
-    Tries each source in SOURCES and returns the first one that can find the song.
-    Returns (title, yt_dlp_query, extra_args, source_label) or None.
+    Tries each source in SOURCES order.
+    Returns (title, direct_url, extra_args, source_label) or None.
 
-    Uses `yt-dlp --print title --skip-download` as a subprocess — same binary
-    that will do the actual streaming, so if this works, streaming will work.
+    Fetches BOTH title and webpage_url in a single yt-dlp call so that
+    the stream subprocess uses the exact URL that was found — preventing
+    any title/audio mismatch from two separate searches.
     """
     for source in SOURCES:
         label = source["label"]
@@ -297,32 +298,36 @@ async def _find_source(song_name: str) -> Optional[tuple[str, str, list, str]]:
 
         print(f"[SEARCH] [{label}] Checking: {song_name!r}...")
 
-        title = await _get_title_via_subprocess(query, extra, label)
-        if title:
-            print(f"[SEARCH] [{label}] ✓ Found: {title!r}")
-            return title, query, extra, label
+        result = await _get_title_and_url(query, extra, label)
+        if result:
+            title, url = result
+            print(f"[SEARCH] [{label}] Found: {title!r}")
+            print(f"[SEARCH] [{label}] URL: {url}")
+            return title, url, extra, label
         else:
-            print(f"[SEARCH] [{label}] ✗ Not found — trying next source.")
+            print(f"[SEARCH] [{label}] Not found — trying next source.")
 
     return None
 
 
-async def _get_title_via_subprocess(
+async def _get_title_and_url(
     query: str,
     extra_args: list,
     label: str,
-) -> Optional[str]:
+) -> Optional[tuple[str, str]]:
     """
-    Runs: yt-dlp --print title --skip-download [extra_args] [query]
+    Runs yt-dlp with two --print fields to get BOTH title and webpage_url
+    in a single call. Returns (title, direct_url) or None.
 
-    Returns the title string on success, None on failure/timeout.
-    This is the most reliable way to check if a source can serve a song —
-    it uses the exact same yt-dlp binary and config as the actual stream.
+    Using the direct URL for streaming guarantees the announced title matches
+    the audio that actually plays — no second search with a potentially
+    different result.
     """
     cmd = [
         "yt-dlp",
         "--skip-download",
-        "--print", "title",
+        "--print", "%(title)s",
+        "--print", "%(webpage_url)s",
         "-q",
         "--no-warnings",
         "--no-playlist",
@@ -352,15 +357,21 @@ async def _get_title_via_subprocess(
 
         if proc.returncode != 0:
             err = stderr.decode("utf-8", errors="replace").strip()
-            # Only print meaningful errors, not "no results" noise
             if err and "ERROR" in err:
-                print(f"[SEARCH] [{label}] yt-dlp error: {err[:200]}")
+                print(f"[SEARCH] [{label}] error: {err[:200]}")
             return None
 
-        title = stdout.decode("utf-8", errors="replace").strip()
-        # yt-dlp may return multiple lines for playlists — take the first
-        title = title.split("\n")[0].strip()
-        return title if title else None
+        lines = stdout.decode("utf-8", errors="replace").strip().split("\n")
+        # Two --print fields → yt-dlp outputs them on consecutive lines:
+        #   line 0: title
+        #   line 1: webpage_url
+        if len(lines) < 2:
+            return None
+        title = lines[0].strip()
+        url = lines[1].strip()
+        if not title or not url or url == "NA":
+            return None
+        return title, url
 
     except FileNotFoundError:
         print("[SEARCH] ERROR: yt-dlp not found in PATH! Check your Dockerfile.")
