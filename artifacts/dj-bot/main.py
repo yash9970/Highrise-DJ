@@ -75,14 +75,19 @@ async def run_bot():
     if not room_id:
         raise ValueError("HIGHRISE_ROOM_ID is not set")
 
-    retry_delay = 5  # seconds, will back off on repeated failures
+    # Minimum delay between ANY reconnect attempt.
+    # Critical: Highrise reports "Multilogin" if we reconnect before the
+    # previous WebSocket session has fully closed server-side (~5s).
+    MIN_RECONNECT_DELAY = 8
+
+    retry_delay = MIN_RECONNECT_DELAY
 
     while True:
         try:
             print("[BOT] Connecting to Highrise...")
 
-            # Stop any leftover audio from previous bot instance before creating new one
-            # This prevents orphaned song loops from racing with the new instance
+            # Kill any running audio and search processes before creating
+            # a new bot instance — prevents orphaned yt-dlp zombies.
             await broadcaster.stop_current()
 
             bot = DJBot()
@@ -91,9 +96,11 @@ async def run_bot():
             definitions = [BotDefinition(bot=bot, room_id=room_id, api_token=token)]
             await main(definitions)
 
-            # If main() returns normally (no exception), reset delay
-            retry_delay = 5
-            print("[BOT] Highrise session ended cleanly. Reconnecting...")
+            # Clean disconnect — always wait before reconnecting.
+            # Without this sleep, we hit Highrise "Multilogin" instantly.
+            print(f"[BOT] Session ended cleanly. Reconnecting in {MIN_RECONNECT_DELAY}s...")
+            retry_delay = MIN_RECONNECT_DELAY
+            await asyncio.sleep(MIN_RECONNECT_DELAY)
 
         except asyncio.CancelledError:
             print("[BOT] Bot task cancelled — shutting down.")
@@ -101,7 +108,7 @@ async def run_bot():
         except Exception as e:
             print(f"[BOT] Disconnected: {e}. Reconnecting in {retry_delay}s...")
             await asyncio.sleep(retry_delay)
-            # Back off up to 60s to avoid hammering Highrise on repeated failures
+            # Exponential backoff up to 60s on repeated failures
             retry_delay = min(retry_delay * 2, 60)
 
 

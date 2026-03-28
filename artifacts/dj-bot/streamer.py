@@ -49,6 +49,20 @@ LOFI_QUERY = "scsearch1:lofi hip hop radio beats to study relax"
 # How long to wait for a title resolution before giving up on a source
 TITLE_TIMEOUT = 30  # seconds
 
+# Global semaphore: only ONE song search at a time.
+# Prevents zombie yt-dlp processes from piling up during reconnect storms.
+# If a search is already running and a new one is requested, the new one
+# waits instead of spawning another yt-dlp process.
+_search_sem: asyncio.Semaphore | None = None
+
+
+def _get_search_sem() -> asyncio.Semaphore:
+    """Lazily initialize the semaphore (needs running event loop)."""
+    global _search_sem
+    if _search_sem is None:
+        _search_sem = asyncio.Semaphore(1)
+    return _search_sem
+
 
 class AudioBroadcaster:
     """
@@ -290,22 +304,27 @@ async def _find_source(song_name: str) -> Optional[tuple[str, str, list, str]]:
     Fetches BOTH title and webpage_url in a single yt-dlp call so that
     the stream subprocess uses the exact URL that was found — preventing
     any title/audio mismatch from two separate searches.
+
+    Protected by a semaphore so only 1 search runs at a time — prevents
+    zombie yt-dlp process buildup during bot reconnect cycles.
     """
-    for source in SOURCES:
-        label = source["label"]
-        query = source["query"].format(song=song_name)
-        extra = source["extra"]
+    sem = _get_search_sem()
+    async with sem:
+        for source in SOURCES:
+            label = source["label"]
+            query = source["query"].format(song=song_name)
+            extra = source["extra"]
 
-        print(f"[SEARCH] [{label}] Checking: {song_name!r}...")
+            print(f"[SEARCH] [{label}] Checking: {song_name!r}...")
 
-        result = await _get_title_and_url(query, extra, label)
-        if result:
-            title, url = result
-            print(f"[SEARCH] [{label}] Found: {title!r}")
-            print(f"[SEARCH] [{label}] URL: {url}")
-            return title, url, extra, label
-        else:
-            print(f"[SEARCH] [{label}] Not found — trying next source.")
+            result = await _get_title_and_url(query, extra, label)
+            if result:
+                title, url = result
+                print(f"[SEARCH] [{label}] Found: {title!r}")
+                print(f"[SEARCH] [{label}] URL: {url}")
+                return title, url, extra, label
+            else:
+                print(f"[SEARCH] [{label}] Not found — trying next source.")
 
     return None
 
@@ -319,9 +338,8 @@ async def _get_title_and_url(
     Runs yt-dlp with two --print fields to get BOTH title and webpage_url
     in a single call. Returns (title, direct_url) or None.
 
-    Using the direct URL for streaming guarantees the announced title matches
-    the audio that actually plays — no second search with a potentially
-    different result.
+    Handles CancelledError by killing the subprocess before propagating —
+    prevents zombie yt-dlp processes when the song loop is cancelled.
     """
     cmd = [
         "yt-dlp",
@@ -335,6 +353,7 @@ async def _get_title_and_url(
         query,
     ]
 
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -347,13 +366,14 @@ async def _get_title_and_url(
                 proc.communicate(), timeout=TITLE_TIMEOUT
             )
         except asyncio.TimeoutError:
-            try:
-                proc.kill()
-                await proc.wait()
-            except Exception:
-                pass
+            _kill_proc(proc)
             print(f"[SEARCH] [{label}] Timed out after {TITLE_TIMEOUT}s.")
             return None
+        except asyncio.CancelledError:
+            # Task was cancelled (bot reconnecting) — kill subprocess immediately
+            # so it doesn't linger as a zombie consuming resources.
+            _kill_proc(proc)
+            raise   # Re-raise so the song loop exits cleanly
 
         if proc.returncode != 0:
             err = stderr.decode("utf-8", errors="replace").strip()
@@ -376,9 +396,20 @@ async def _get_title_and_url(
     except FileNotFoundError:
         print("[SEARCH] ERROR: yt-dlp not found in PATH! Check your Dockerfile.")
         return None
+    except asyncio.CancelledError:
+        raise   # Always propagate cancellation
     except Exception as e:
         print(f"[SEARCH] [{label}] Unexpected error: {e}")
         return None
+
+
+def _kill_proc(proc) -> None:
+    """Kill a subprocess silently — used for cleanup on timeout/cancellation."""
+    try:
+        if proc and proc.returncode is None:
+            proc.kill()
+    except Exception:
+        pass
 
 
 broadcaster = AudioBroadcaster()
