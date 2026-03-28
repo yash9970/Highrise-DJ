@@ -93,14 +93,20 @@ class DJBot(BaseBot):
 
         _cancel_all_tasks()
 
-        init_db()
+        await asyncio.to_thread(init_db)
         await asyncio.sleep(2)
 
-        try:
-            await self.highrise.teleport(session_metadata.user_id, BOT_POSITION)
-            print("[BOT] Teleported to position.")
-        except Exception as e:
-            print(f"[BOT] Teleport failed: {e}")
+        # Retry teleport multiple times. If Highrise API is slow or 
+        # previous session hasn't cleared, a single try will fail and
+        # leave the bot floating "not in room" permanently.
+        for attempt in range(5):
+            try:
+                await self.highrise.teleport(session_metadata.user_id, BOT_POSITION)
+                print("[BOT] Teleported to position.")
+                break
+            except Exception as e:
+                print(f"[BOT] Teleport attempt {attempt + 1} failed: {e}")
+                await asyncio.sleep(3)
 
         await asyncio.sleep(2)
 
@@ -158,7 +164,9 @@ class DJBot(BaseBot):
 
         while True:
             try:
-                next_song = get_next_song()
+                # DB query is synchronous (psycopg2) - MUST run in thread so we don't block
+                # the asyncio event loop. A blocked loop = failing health checks = container reboot
+                next_song = await asyncio.to_thread(get_next_song)
 
                 # ── A queued request ──────────────────────────────────────
                 if next_song:
@@ -205,7 +213,7 @@ class DJBot(BaseBot):
                             pass
 
                     # Always delete from queue when done, whether skipped or finished
-                    delete_song(song_id)
+                    await asyncio.to_thread(delete_song, song_id)
                     await asyncio.sleep(1)
 
                 # ── Fallback trending ─────────────────────────────────────
@@ -301,7 +309,7 @@ class DJBot(BaseBot):
                 await self._reply(f"@{user.username} Usage: !dj play <song name>")
                 return
 
-            add_song(args, user.username)
+            await asyncio.to_thread(add_song, args, user.username)
 
             if self._is_fallback_playing:
                 # Interrupt trending — the song loop will pick up the queued song next
@@ -309,7 +317,7 @@ class DJBot(BaseBot):
                 await self._reply(f"⏭️ Interrupting radio — '{args}' loading next! (by {user.username})")
             else:
                 # A queued song is either searching or playing
-                queue = get_queue()
+                queue = await asyncio.to_thread(get_queue)
                 pos = len(queue)
                 if broadcaster.is_active:
                     await self._reply(
@@ -326,7 +334,7 @@ class DJBot(BaseBot):
                     f"@{user.username} Only VIPs, mods, or the master can view the queue."
                 )
                 return
-            queue = get_queue()
+            queue = await asyncio.to_thread(get_queue)
             if not queue:
                 await self._reply("Queue is empty! Use !dj play <song> to request.")
             else:
@@ -361,9 +369,9 @@ class DJBot(BaseBot):
             # stream — the existing loop will naturally move to the next song.
             # Spawning a new task was the root cause of concurrent loops,
             # duplicate announcements, and title/audio mismatches.
-            next_song = get_next_song()
+            next_song = await asyncio.to_thread(get_next_song)
             if next_song:
-                delete_song(next_song["id"])
+                await asyncio.to_thread(delete_song, next_song["id"])
                 await self._reply(f"⏭️ Skipped! Loading next song...")
             else:
                 await self._reply(f"⏭️ Skipped fallback radio!")
@@ -380,7 +388,7 @@ class DJBot(BaseBot):
                 await self._reply(f"@{user.username} Only the master can clear the queue.")
                 return
             from db import clear_queue
-            clear_queue()
+            await asyncio.to_thread(clear_queue)
             await broadcaster.stop_current(interrupted=True)
             await self._reply("🗑️ Queue cleared and playback stopped!")
             return
