@@ -1,12 +1,12 @@
+from streamer import broadcaster
+from bot import DJBot
+from highrise.__main__ import main, BotDefinition
+from aiohttp import web
 import os
 import asyncio
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
-from aiohttp import web
-from highrise.__main__ import main, BotDefinition
-from bot import DJBot
-from streamer import broadcaster
 
 PORT = int(os.environ.get("PORT", 8000))
 
@@ -38,9 +38,11 @@ async def run_web_server():
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
 
-    domain = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("REPLIT_DEV_DOMAIN") or os.environ.get("SPACE_HOST")
+    domain = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get(
+        "REPLIT_DEV_DOMAIN") or os.environ.get("SPACE_HOST")
     if domain:
-        stream_url = f"https://{domain}/stream" if not domain.startswith("http") else f"{domain}/stream"
+        stream_url = f"https://{domain}/stream" if not domain.startswith(
+            "http") else f"{domain}/stream"
     else:
         stream_url = f"http://localhost:{PORT}/stream"
 
@@ -59,14 +61,15 @@ async def heartbeat_loop():
     Pings the service's own URL to keep Render awake.
     """
     import aiohttp
-    
+
     while True:
         await asyncio.sleep(60)
         status = "playing" if broadcaster.is_playing else "idle"
         song = broadcaster.current_title or "none"
         listeners = broadcaster.listener_count
-        print(f"[HEARTBEAT] status={status} | song={song!r} | listeners={listeners}")
-        
+        print(
+            f"[HEARTBEAT] status={status} | song={song!r} | listeners={listeners}")
+
         # Ping own health endpoint to prevent Render from sleeping
         domain = os.environ.get("RENDER_EXTERNAL_URL")
         if domain:
@@ -81,7 +84,7 @@ async def heartbeat_loop():
 async def run_bot():
     global _active_bot
     print("[DEBUG] run_bot() started")
-    
+
     token = os.environ.get("HIGHRISE_TOKEN")
     room_id = os.environ.get("HIGHRISE_ROOM_ID")
 
@@ -114,14 +117,16 @@ async def run_bot():
             _active_bot = bot
 
             print("[DEBUG] Creating BotDefinition...")
-            definitions = [BotDefinition(bot=bot, room_id=room_id, api_token=token)]
-            
+            definitions = [BotDefinition(
+                bot=bot, room_id=room_id, api_token=token)]
+
             print("[DEBUG] Awaiting main(definitions)...")
             await main(definitions)
 
             # Clean disconnect — always wait before reconnecting.
             # Without this sleep, we hit Highrise "Multilogin" instantly.
-            print(f"[BOT] Session ended cleanly. Reconnecting in {MIN_RECONNECT_DELAY}s...")
+            print(
+                f"[BOT] Session ended cleanly. Reconnecting in {MIN_RECONNECT_DELAY}s...")
             retry_delay = MIN_RECONNECT_DELAY
             await asyncio.sleep(MIN_RECONNECT_DELAY)
 
@@ -129,7 +134,8 @@ async def run_bot():
             print("[BOT] Bot task cancelled — shutting down.")
             raise
         except Exception as e:
-            print(f"[BOT] Disconnected: {e}. Reconnecting in {retry_delay}s...")
+            print(
+                f"[BOT] Disconnected: {e}. Reconnecting in {retry_delay}s...")
             await asyncio.sleep(retry_delay)
             # Exponential backoff up to 60s on repeated failures
             retry_delay = min(retry_delay * 2, 60)
@@ -148,7 +154,8 @@ async def _clear_ytdlp_cache():
             stderr=asyncio.subprocess.PIPE,
         )
         await proc.wait()
-        print("[STARTUP] yt-dlp cache cleared (fresh SoundCloud client_id will be fetched).")
+        print(
+            "[STARTUP] yt-dlp cache cleared (fresh SoundCloud client_id will be fetched).")
     except Exception as e:
         print(f"[STARTUP] Could not clear yt-dlp cache: {e}")
 
