@@ -1,6 +1,11 @@
 import os
 import sys
 
+# Force Render to print all logs instantly
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+
 if __name__ == "__main__":
     # Point to the actual bot directory
     bot_dir = os.path.join(os.path.dirname(__file__), "artifacts", "dj-bot")
