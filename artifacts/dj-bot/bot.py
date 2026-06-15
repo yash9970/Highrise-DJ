@@ -97,7 +97,6 @@ class DJBot(BaseBot):
 
             print("[BOT] Initializing database...")
             await asyncio.to_thread(init_db)
-            await asyncio.sleep(2)
 
             # Load custom position if it exists
             import json
@@ -110,17 +109,29 @@ class DJBot(BaseBot):
             except Exception as e:
                 print(f"[BOT] Failed to load custom position: {e}")
 
+            print("[BOT] Waiting 8s for ghost sessions to clear...")
+            await asyncio.sleep(8)
+
             # Retry teleport multiple times. If Highrise API is slow or 
             # previous session hasn't cleared, a single try will fail and
             # leave the bot floating "not in room" permanently.
-            for attempt in range(5):
-                try:
-                    await self.highrise.teleport(session_metadata.user_id, teleport_pos)
-                    print("[BOT] Teleported to position.")
+            teleported = False
+            # First try custom pos, if it fails repeatedly, try the default safe pos
+            for pos_to_try in [teleport_pos, BOT_POSITION]:
+                if teleported:
                     break
-                except Exception as e:
-                    print(f"[BOT] Teleport attempt {attempt + 1} failed: {e}")
-                    await asyncio.sleep(3)
+                for attempt in range(6):
+                    try:
+                        await self.highrise.teleport(session_metadata.user_id, pos_to_try)
+                        print("[BOT] Teleported to position.")
+                        teleported = True
+                        break
+                    except Exception as e:
+                        print(f"[BOT] Teleport attempt {attempt + 1} failed: {e}")
+                        await asyncio.sleep(6)
+            
+            if not teleported:
+                print("[BOT] CRITICAL: Could not teleport into room. Ghost session stuck!")
 
             await asyncio.sleep(2)
 
