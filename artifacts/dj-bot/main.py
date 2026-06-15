@@ -38,7 +38,7 @@ async def run_web_server():
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
 
-    domain = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("REPLIT_DEV_DOMAIN")
+    domain = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("REPLIT_DEV_DOMAIN") or os.environ.get("SPACE_HOST")
     if domain:
         stream_url = f"https://{domain}/stream" if not domain.startswith("http") else f"{domain}/stream"
     else:
