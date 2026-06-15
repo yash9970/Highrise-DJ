@@ -80,13 +80,19 @@ async def heartbeat_loop():
 
 async def run_bot():
     global _active_bot
+    print("[DEBUG] run_bot() started")
+    
     token = os.environ.get("HIGHRISE_TOKEN")
     room_id = os.environ.get("HIGHRISE_ROOM_ID")
 
     if not token:
+        print("[DEBUG] Missing HIGHRISE_TOKEN")
         raise ValueError("HIGHRISE_TOKEN is not set")
     if not room_id:
+        print("[DEBUG] Missing HIGHRISE_ROOM_ID")
         raise ValueError("HIGHRISE_ROOM_ID is not set")
+
+    print(f"[DEBUG] Loaded token and room ID: {room_id}")
 
     # Minimum delay between ANY reconnect attempt.
     # Critical: Highrise reports "Multilogin" if we reconnect before the
@@ -98,15 +104,19 @@ async def run_bot():
     while True:
         try:
             print("[BOT] Connecting to Highrise...")
-
+            print("[DEBUG] Stopping broadcaster...")
             # Kill any running audio and search processes before creating
             # a new bot instance — prevents orphaned yt-dlp zombies.
             await broadcaster.stop_current()
 
+            print("[DEBUG] Creating DJBot instance...")
             bot = DJBot()
             _active_bot = bot
 
+            print("[DEBUG] Creating BotDefinition...")
             definitions = [BotDefinition(bot=bot, room_id=room_id, api_token=token)]
+            
+            print("[DEBUG] Awaiting main(definitions)...")
             await main(definitions)
 
             # Clean disconnect — always wait before reconnecting.
