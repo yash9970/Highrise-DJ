@@ -91,31 +91,40 @@ class DJBot(BaseBot):
         print(f"[BOT] DJ Bot started. Bot ID: {session_metadata.user_id}")
         print(f"[BOT] Room owner ID: {self._owner_id} (this is the master)")
 
-        _cancel_all_tasks()
+        try:
+            _cancel_all_tasks()
 
-        await asyncio.to_thread(init_db)
-        await asyncio.sleep(2)
+            print("[BOT] Initializing database...")
+            await asyncio.to_thread(init_db)
+            await asyncio.sleep(2)
 
-        # Retry teleport multiple times. If Highrise API is slow or 
-        # previous session hasn't cleared, a single try will fail and
-        # leave the bot floating "not in room" permanently.
-        for attempt in range(5):
-            try:
-                await self.highrise.teleport(session_metadata.user_id, BOT_POSITION)
-                print("[BOT] Teleported to position.")
-                break
-            except Exception as e:
-                print(f"[BOT] Teleport attempt {attempt + 1} failed: {e}")
-                await asyncio.sleep(3)
+            # Retry teleport multiple times. If Highrise API is slow or 
+            # previous session hasn't cleared, a single try will fail and
+            # leave the bot floating "not in room" permanently.
+            for attempt in range(5):
+                try:
+                    await self.highrise.teleport(session_metadata.user_id, BOT_POSITION)
+                    print("[BOT] Teleported to position.")
+                    break
+                except Exception as e:
+                    print(f"[BOT] Teleport attempt {attempt + 1} failed: {e}")
+                    await asyncio.sleep(3)
 
-        await asyncio.sleep(2)
+            await asyncio.sleep(2)
 
-        self._dance_task = asyncio.create_task(self._dance_loop())
-        self._talk_task  = asyncio.create_task(self._talk_loop())
-        self._song_task  = asyncio.create_task(self._song_loop())
-        self._auto_dance_task = asyncio.create_task(self._auto_dance_loop())
-        _active_tasks.extend([self._dance_task, self._talk_task, self._song_task, self._auto_dance_task])
-        print("[BOT] Background tasks started (dance, talk, song, auto-dance).")
+            self._dance_task = asyncio.create_task(self._dance_loop())
+            self._talk_task  = asyncio.create_task(self._talk_loop())
+            self._song_task  = asyncio.create_task(self._song_loop())
+            self._auto_dance_task = asyncio.create_task(self._auto_dance_loop())
+            _active_tasks.extend([self._dance_task, self._talk_task, self._song_task, self._auto_dance_task])
+            print("[BOT] Background tasks started (dance, talk, song, auto-dance).")
+            
+        except Exception as e:
+            print(f"\n[CRITICAL ERROR] Bot crashed during startup: {e}")
+            print("Did you forget to add the DATABASE_URL in Render Environment Variables?\n")
+            import traceback
+            traceback.print_exc()
+            raise e
 
     # ── Background loops ──────────────────────────────────────────────────────
 
