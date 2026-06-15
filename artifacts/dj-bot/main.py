@@ -56,13 +56,26 @@ async def heartbeat_loop():
     """
     Prints a heartbeat every 60 seconds so Render never sees a silent stdout
     and decides to kill the process. Also logs radio status for monitoring.
+    Pings the service's own URL to keep Render awake.
     """
+    import aiohttp
+    
     while True:
         await asyncio.sleep(60)
         status = "playing" if broadcaster.is_playing else "idle"
         song = broadcaster.current_title or "none"
         listeners = broadcaster.listener_count
         print(f"[HEARTBEAT] status={status} | song={song!r} | listeners={listeners}")
+        
+        # Ping own health endpoint to prevent Render from sleeping
+        domain = os.environ.get("RENDER_EXTERNAL_URL")
+        if domain:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(f"{domain}/health") as resp:
+                        pass
+            except Exception as e:
+                print(f"[HEARTBEAT] Ping failed: {e}")
 
 
 async def run_bot():
