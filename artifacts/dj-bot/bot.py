@@ -60,6 +60,7 @@ HELP_LINES = [
     "!dj clear — Clear queue (master)",
     "!dj viplist — VIP/mod list (master)",
     "!dj listeners — Listener count (master)",
+    "!dj setbot — Move bot to your location (master)",
     "!dj help — This message",
 ]
 
@@ -98,12 +99,23 @@ class DJBot(BaseBot):
             await asyncio.to_thread(init_db)
             await asyncio.sleep(2)
 
+            # Load custom position if it exists
+            import json
+            teleport_pos = BOT_POSITION
+            try:
+                if os.path.exists("bot_position.json"):
+                    with open("bot_position.json", "r") as f:
+                        data = json.load(f)
+                        teleport_pos = Position(data["x"], data["y"], data["z"], facing=data.get("facing", "FrontLeft"))
+            except Exception as e:
+                print(f"[BOT] Failed to load custom position: {e}")
+
             # Retry teleport multiple times. If Highrise API is slow or 
             # previous session hasn't cleared, a single try will fail and
             # leave the bot floating "not in room" permanently.
             for attempt in range(5):
                 try:
-                    await self.highrise.teleport(session_metadata.user_id, BOT_POSITION)
+                    await self.highrise.teleport(session_metadata.user_id, teleport_pos)
                     print("[BOT] Teleported to position.")
                     break
                 except Exception as e:
@@ -449,6 +461,38 @@ class DJBot(BaseBot):
                 await self._reply(f"@{user.username} Only the master can use !dj viplist.")
                 return
             await self._handle_viplist()
+            return
+
+        # ── setbot ───────────────────────────────────────────────────────────
+        if command == "setbot":
+            if not is_master:
+                await self._reply(f"@{user.username} Only the master can move the bot.")
+                return
+
+            # Get user's current position
+            resp = await self.highrise.get_room_users()
+            user_pos = None
+            for room_user, pos in getattr(resp, "content", []):
+                if room_user.id == user.id:
+                    user_pos = pos
+                    break
+
+            if not isinstance(user_pos, Position):
+                await self._reply("❌ Couldn't find your coordinates (are you on an anchor?).")
+                return
+
+            try:
+                # Teleport the bot to the user's position
+                await self.highrise.teleport(self.highrise.my_id, user_pos)
+                
+                # Save to file so it persists on restart
+                import json
+                with open("bot_position.json", "w") as f:
+                    json.dump({"x": user_pos.x, "y": user_pos.y, "z": user_pos.z, "facing": user_pos.facing}, f)
+                
+                await self._reply(f"✅ Bot teleported to your location!")
+            except Exception as e:
+                await self._reply(f"❌ Failed to teleport: {e}")
             return
 
         # ── listeners ────────────────────────────────────────────────────────
