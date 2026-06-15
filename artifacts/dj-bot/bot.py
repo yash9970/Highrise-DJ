@@ -58,8 +58,9 @@ HELP_LINES = [
     "!dj np — Now playing",
     "!dj skip — Skip current song (mod/master)",
     "!dj clear — Clear queue (master)",
-    "!dj viplist — VIP/mod list (master)",
     "!dj listeners — Listener count (master)",
+    "!dj wear <id> — Wear item (master)",
+    "!dj unwear <id> — Remove item (master)",
     "!dj setbot — Move bot to your location (master)",
     "!dj help — This message",
 ]
@@ -98,14 +99,14 @@ class DJBot(BaseBot):
             print("[BOT] Initializing database...")
             await asyncio.to_thread(init_db)
 
-            # Load custom position if it exists
-            import json
+            # Load custom position from Helper API
             teleport_pos = BOT_POSITION
             try:
-                if os.path.exists("bot_position.json"):
-                    with open("bot_position.json", "r") as f:
-                        data = json.load(f)
-                        teleport_pos = Position(data["x"], data["y"], data["z"], facing=data.get("facing", "FrontLeft"))
+                from vip_checker import get_dj_pos
+                pos_data = await get_dj_pos()
+                if pos_data:
+                    teleport_pos = Position(pos_data["x"], pos_data["y"], pos_data["z"], facing=pos_data.get("facing", "FrontLeft"))
+                    print(f"[BOT] Loaded DJ pos from API: {teleport_pos}")
             except Exception as e:
                 print(f"[BOT] Failed to load custom position: {e}")
 
@@ -496,14 +497,62 @@ class DJBot(BaseBot):
                 # Teleport the bot to the user's position
                 await self.highrise.teleport(self.highrise.my_id, user_pos)
                 
-                # Save to file so it persists on restart
-                import json
-                with open("bot_position.json", "w") as f:
-                    json.dump({"x": user_pos.x, "y": user_pos.y, "z": user_pos.z, "facing": user_pos.facing}, f)
+                # Save to Helper API so it persists on restart
+                from vip_checker import set_dj_pos
+                success = await set_dj_pos(user_pos.x, user_pos.y, user_pos.z, user_pos.facing)
                 
-                await self._reply(f"✅ Bot teleported to your location!")
+                if success:
+                    await self._reply(f"✅ Bot teleported and saved to permanent database!")
+                else:
+                    await self._reply(f"✅ Bot teleported, but failed to save to database.")
             except Exception as e:
                 await self._reply(f"❌ Failed to teleport: {e}")
+            return
+
+        # ── wear ─────────────────────────────────────────────────────────────
+        if command == "wear":
+            if not is_master:
+                await self._reply(f"@{user.username} Only the master can use !dj wear.")
+                return
+            item_id = args.strip()
+            if not item_id:
+                await self._reply("Usage: !dj wear <item_id>")
+                return
+            try:
+                from highrise.models import Item
+                outfit_resp = await self.highrise.get_my_outfit()
+                outfit = getattr(outfit_resp, "outfit", [])
+                if any(i.id == item_id for i in outfit):
+                    await self._reply(f"Already wearing '{item_id}'.")
+                    return
+                new_item = Item(type="clothing", amount=1, id=item_id)
+                new_outfit = list(outfit) + [new_item]
+                await self.highrise.set_outfit(new_outfit)
+                await self._reply(f"✅ Equipped: {item_id}")
+            except Exception as e:
+                await self._reply(f"❌ Couldn't equip '{item_id}': {e}")
+            return
+
+        # ── unwear ───────────────────────────────────────────────────────────
+        if command == "unwear":
+            if not is_master:
+                await self._reply(f"@{user.username} Only the master can use !dj unwear.")
+                return
+            item_id = args.strip()
+            if not item_id:
+                await self._reply("Usage: !dj unwear <item_id>")
+                return
+            try:
+                outfit_resp = await self.highrise.get_my_outfit()
+                outfit = getattr(outfit_resp, "outfit", [])
+                new_outfit = [i for i in outfit if i.id != item_id]
+                if len(new_outfit) == len(outfit):
+                    await self._reply(f"'{item_id}' is not in the current outfit.")
+                    return
+                await self.highrise.set_outfit(new_outfit)
+                await self._reply(f"✅ Removed: {item_id}")
+            except Exception as e:
+                await self._reply(f"❌ Couldn't remove '{item_id}': {e}")
             return
 
         # ── listeners ────────────────────────────────────────────────────────
