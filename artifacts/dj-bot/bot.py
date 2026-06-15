@@ -117,23 +117,21 @@ class DJBot(BaseBot):
             # previous session hasn't cleared, a single try will fail and
             # leave the bot floating "not in room" permanently.
             teleported = False
-            # First try custom pos, if it fails repeatedly, try the default safe pos
-            while not teleported:
-                for pos_to_try in [teleport_pos, BOT_POSITION]:
-                    if teleported:
+            for pos_to_try in [teleport_pos, BOT_POSITION]:
+                if teleported:
+                    break
+                for attempt in range(6):
+                    try:
+                        await self.highrise.teleport(session_metadata.user_id, pos_to_try)
+                        print(f"[BOT] Teleported to position: {pos_to_try}")
+                        teleported = True
                         break
-                    for attempt in range(4):
-                        try:
-                            await self.highrise.teleport(session_metadata.user_id, pos_to_try)
-                            print(f"[BOT] Teleported to position: {pos_to_try}")
-                            teleported = True
-                            break
-                        except Exception as e:
-                            print(f"[BOT] Teleport attempt {attempt + 1} failed (ghost session?): {e}")
-                            await asyncio.sleep(8)
-                if not teleported:
-                    print("[BOT] Still could not teleport. Ghost session very stuck. Retrying in 15s...")
-                    await asyncio.sleep(15)
+                    except Exception as e:
+                        print(f"[BOT] Teleport attempt {attempt + 1} failed: {e}")
+                        await asyncio.sleep(6)
+            
+            if not teleported:
+                print("[BOT] CRITICAL: Could not teleport into room. Ghost session stuck!")
 
             await asyncio.sleep(2)
 
