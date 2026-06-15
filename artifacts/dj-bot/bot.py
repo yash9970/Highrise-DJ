@@ -5,7 +5,7 @@ from db import init_db, add_song, get_queue, get_next_song, delete_song
 from vip_checker import is_vip
 from streamer import broadcaster
 
-BOT_POSITION = Position(10.5, 0.25, 13.5, facing="FrontLeft")
+BOT_POSITION = Position(18.0, 0.0, 13.5, facing="FrontRight")
 
 DANCE_EMOTES = [
     "dance-tiktok8",
@@ -118,21 +118,22 @@ class DJBot(BaseBot):
             # leave the bot floating "not in room" permanently.
             teleported = False
             # First try custom pos, if it fails repeatedly, try the default safe pos
-            for pos_to_try in [teleport_pos, BOT_POSITION]:
-                if teleported:
-                    break
-                for attempt in range(6):
-                    try:
-                        await self.highrise.teleport(session_metadata.user_id, pos_to_try)
-                        print("[BOT] Teleported to position.")
-                        teleported = True
+            while not teleported:
+                for pos_to_try in [teleport_pos, BOT_POSITION]:
+                    if teleported:
                         break
-                    except Exception as e:
-                        print(f"[BOT] Teleport attempt {attempt + 1} failed: {e}")
-                        await asyncio.sleep(6)
-            
-            if not teleported:
-                print("[BOT] CRITICAL: Could not teleport into room. Ghost session stuck!")
+                    for attempt in range(4):
+                        try:
+                            await self.highrise.teleport(session_metadata.user_id, pos_to_try)
+                            print(f"[BOT] Teleported to position: {pos_to_try}")
+                            teleported = True
+                            break
+                        except Exception as e:
+                            print(f"[BOT] Teleport attempt {attempt + 1} failed (ghost session?): {e}")
+                            await asyncio.sleep(8)
+                if not teleported:
+                    print("[BOT] Still could not teleport. Ghost session very stuck. Retrying in 15s...")
+                    await asyncio.sleep(15)
 
             await asyncio.sleep(2)
 
