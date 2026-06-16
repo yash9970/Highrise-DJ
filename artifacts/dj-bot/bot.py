@@ -208,7 +208,7 @@ class DJBot(BaseBot):
         i = 0
         while True:
             try:
-                if not self.room_is_live:
+                if not getattr(self, "room_is_live", False):
                     await asyncio.sleep(10)
                     continue
                 emote = DANCE_EMOTES[i % len(DANCE_EMOTES)]
@@ -228,7 +228,7 @@ class DJBot(BaseBot):
         i = 0
         while True:
             try:
-                if not self.room_is_live:
+                if not getattr(self, "room_is_live", False):
                     await asyncio.sleep(10)
                     continue
                 phrase = DJ_PHRASES[i % len(DJ_PHRASES)]
