@@ -141,8 +141,9 @@ class DJBot(BaseBot):
             self._talk_task  = asyncio.create_task(self._talk_loop())
             self._song_task  = asyncio.create_task(self._song_loop())
             self._auto_dance_task = asyncio.create_task(self._auto_dance_loop())
-            _active_tasks.extend([self._dance_task, self._talk_task, self._song_task, self._auto_dance_task])
-            print("[BOT] Background tasks started (dance, talk, song, auto-dance).")
+            self._ping_task  = asyncio.create_task(self._ping_loop())
+            _active_tasks.extend([self._dance_task, self._talk_task, self._song_task, self._auto_dance_task, self._ping_task])
+            print("[BOT] Background tasks started (dance, talk, song, auto-dance, ping).")
             
         except Exception as e:
             print(f"\n[CRITICAL ERROR] Bot crashed during startup: {e}")
@@ -152,6 +153,20 @@ class DJBot(BaseBot):
             raise e
 
     # ── Background loops ──────────────────────────────────────────────────────
+
+    async def _ping_loop(self):
+        import aiohttp
+        while True:
+            try:
+                await asyncio.sleep(5 * 60)
+                async with aiohttp.ClientSession() as session:
+                    await session.get("https://yash9970-highrisebotchaichai.hf.space/ping")
+                    await session.get("https://yash9970-highrise-dj.hf.space/health")
+                print("[BOT] Keepalive ping sent to both servers to prevent sleep")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"[BOT] Ping error: {e}")
 
     async def _dance_loop(self):
         i = 0
