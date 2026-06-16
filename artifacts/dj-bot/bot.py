@@ -966,18 +966,32 @@ class DJBot(BaseBot):
         print(f"[BOT] User joined: {user.username}")
         # Cache user ID for DMs (needed for 10 PM VIP notifications)
         self._user_id_cache[user.username.lower()] = user.id
-        # When a user joins, the room wakes up. Teleport to the DJ position just in case we were stuck at the door!
+
+        # ★ GHOST INSTANCE FLAG CHECK ★
+        # If on_user_join fires but get_room_users() still sees 0-1 users,
+        # this bot is in a ghost/isolated instance — must restart to rejoin real room.
+        await asyncio.sleep(5)  # Let server settle before checking
         try:
-            await asyncio.sleep(2.0)
-            from vip_checker import get_dj_pos
-            pos_data = await get_dj_pos()
-            if pos_data:
-                teleport_pos = Position(pos_data["x"], pos_data["y"], pos_data["z"], facing=pos_data.get("facing", "FrontLeft"))
+            resp = await self.highrise.get_room_users()
+            num_users = len(getattr(resp, "content", []))
+            if num_users <= 1:
+                print(f"[BOT] GHOST INSTANCE DETECTED! on_user_join fired but only {num_users} user(s) visible.")
+                print("[BOT] Sleeping 20s to let old session close, then restarting...")
+                await asyncio.sleep(20)
+                import os
+                os._exit(1)
             else:
-                teleport_pos = BOT_POSITION
-            await self.highrise.teleport(self.bot_id, teleport_pos)
-        except Exception:
-            pass
+                # Real room — teleport to DJ position
+                self.room_is_live = True
+                from vip_checker import get_dj_pos
+                pos_data = await get_dj_pos()
+                if pos_data:
+                    teleport_pos = Position(pos_data["x"], pos_data["y"], pos_data["z"], facing=pos_data.get("facing", "FrontLeft"))
+                else:
+                    teleport_pos = BOT_POSITION
+                await self.highrise.teleport(self.bot_id, teleport_pos)
+        except Exception as e:
+            print(f"[BOT] on_user_join check error: {e}")
 
     async def on_emote(self, user: User, emote_id: str, receiver: User | None) -> None:
         pass
