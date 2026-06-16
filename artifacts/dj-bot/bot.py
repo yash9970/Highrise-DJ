@@ -134,7 +134,20 @@ class DJBot(BaseBot):
                 else:
                     print(f"[BOT] Initial teleport failed: {e}")
 
+
+            # Print inventory so we can pick outfit items
+            try:
+                inv = await self.highrise.get_inventory()
+                items = getattr(inv, "items", [])
+                clothing = [i for i in items if getattr(i, "type", "") == "clothing"]
+                print(f"[BOT] Inventory: {len(clothing)} clothing items:")
+                for item in clothing:
+                    print(f"[BOT]   {item.id}")
+            except Exception as e:
+                print(f"[BOT] Could not fetch inventory: {e}")
+
             await asyncio.sleep(2)
+
 
             self._dance_task = asyncio.create_task(self._dance_loop())
             self._talk_task  = asyncio.create_task(self._talk_loop())
