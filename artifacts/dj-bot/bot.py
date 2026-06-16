@@ -90,6 +90,7 @@ class DJBot(BaseBot):
 
     async def on_start(self, session_metadata: SessionMetadata) -> None:
         self._owner_id = session_metadata.room_info.owner_id
+        self.bot_id = session_metadata.user_id
         print(f"[BOT] DJ Bot started. Bot ID: {session_metadata.user_id}")
         print(f"[BOT] Room owner ID: {self._owner_id} (this is the master)")
 
@@ -131,9 +132,7 @@ class DJBot(BaseBot):
                         await asyncio.sleep(6)
             
             if not teleported:
-                print("[BOT] CRITICAL: Could not teleport into room. Ghost session stuck! Forcing restart...")
-                import os
-                os._exit(1)
+                print("[BOT] WARNING: Could not teleport into room (Empty room hibernation?). Bot will stay at door.")
 
             await asyncio.sleep(2)
 
@@ -691,6 +690,17 @@ class DJBot(BaseBot):
 
     async def on_user_join(self, user: User, position: Position | AnchorPosition) -> None:
         print(f"[BOT] User joined: {user.username}")
+        # When a user joins, the room wakes up. Teleport to the DJ position just in case we were stuck at the door!
+        try:
+            from vip_checker import get_dj_pos
+            pos_data = await get_dj_pos()
+            if pos_data:
+                teleport_pos = Position(pos_data["x"], pos_data["y"], pos_data["z"], facing=pos_data.get("facing", "FrontLeft"))
+            else:
+                teleport_pos = BOT_POSITION
+            await self.highrise.teleport(self.bot_id, teleport_pos)
+        except Exception:
+            pass
 
     async def on_emote(self, user: User, emote_id: str, receiver: User | None) -> None:
         pass
