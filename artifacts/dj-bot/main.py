@@ -101,7 +101,7 @@ async def run_bot():
     # Minimum delay between ANY reconnect attempt.
     # Critical: Highrise reports "Multilogin" if we reconnect before the
     # previous WebSocket session has fully closed server-side (~5s).
-    MIN_RECONNECT_DELAY = 8
+    MIN_RECONNECT_DELAY = 20
 
     retry_delay = MIN_RECONNECT_DELAY
 

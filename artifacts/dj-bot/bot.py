@@ -197,7 +197,8 @@ class DJBot(BaseBot):
                     self.room_is_live = False
                     empty_count += 1
                     if empty_count >= 4:
-                        print("[BOT] Room empty for 1 minute. Restarting to clear ghost instance!")
+                        print("[BOT] Room empty for 1 minute. Waiting 20s for session to close, then restarting...")
+                        await asyncio.sleep(20)
                         import os
                         os._exit(1)
             except asyncio.CancelledError:
