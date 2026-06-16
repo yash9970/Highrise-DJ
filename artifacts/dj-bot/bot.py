@@ -99,7 +99,9 @@ class DJBot(BaseBot):
 
             print("[BOT] Initializing database...")
             await asyncio.to_thread(init_db)
-
+            
+            await asyncio.sleep(8)
+            
             # Load custom position from Helper API
             teleport_pos = BOT_POSITION
             try:
@@ -109,30 +111,27 @@ class DJBot(BaseBot):
                     teleport_pos = Position(pos_data["x"], pos_data["y"], pos_data["z"], facing=pos_data.get("facing", "FrontLeft"))
                     print(f"[BOT] Loaded DJ pos from API: {teleport_pos}")
             except Exception as e:
-                print(f"[BOT] Failed to load custom position: {e}")
+                print(f"[BOT] Failed to get DJ pos from API: {e}. Using default.")
 
-            print("[BOT] Waiting 8s for ghost sessions to clear...")
-            await asyncio.sleep(8)
-
-            # Retry teleport multiple times. If Highrise API is slow or 
-            # previous session hasn't cleared, a single try will fail and
-            # leave the bot floating "not in room" permanently.
-            teleported = False
-            for pos_to_try in [teleport_pos, BOT_POSITION]:
-                if teleported:
-                    break
-                for attempt in range(6):
-                    try:
-                        await self.highrise.teleport(session_metadata.user_id, pos_to_try)
-                        print(f"[BOT] Teleported to position: {pos_to_try}")
-                        teleported = True
-                        break
-                    except Exception as e:
-                        print(f"[BOT] Teleport attempt {attempt + 1} failed: {e}")
-                        await asyncio.sleep(6)
-            
-            if not teleported:
-                print("[BOT] WARNING: Could not teleport into room (Empty room hibernation?). Bot will stay at door.")
+            # Flawless Ghost Session Check:
+            # Try to teleport. If it fails with "Not in room", check if the room is asleep (only bot inside).
+            # If the room has real players inside and we still get "Not in room", it's a Ghost Session!
+            try:
+                await self.highrise.teleport(session_metadata.user_id, teleport_pos)
+                print(f"[BOT] Teleported to position: {teleport_pos}")
+            except Exception as e:
+                if "not in room" in str(e).lower() or "server error" in str(e).lower():
+                    resp = await self.highrise.get_room_users()
+                    if hasattr(resp, "content") and len(resp.content) > 1:
+                        print(f"[BOT] CRITICAL: Room is awake but I can't move! Ghost session detected!")
+                        print(f"[BOT] Disconnecting and sleeping for 65 seconds to clear the old session...")
+                        await asyncio.sleep(65)
+                        import os
+                        os._exit(1)
+                    else:
+                        print(f"[BOT] WARNING: Could not teleport (Empty room hibernation?). Bot will stay at door.")
+                else:
+                    print(f"[BOT] Initial teleport failed: {e}")
 
             await asyncio.sleep(2)
 
@@ -691,7 +690,9 @@ class DJBot(BaseBot):
     async def on_user_join(self, user: User, position: Position | AnchorPosition) -> None:
         print(f"[BOT] User joined: {user.username}")
         # When a user joins, the room wakes up. Teleport to the DJ position just in case we were stuck at the door!
+        # Wait 2 seconds for the room's physics mesh to fully load before teleporting
         try:
+            await asyncio.sleep(2.0)
             from vip_checker import get_dj_pos
             pos_data = await get_dj_pos()
             if pos_data:
