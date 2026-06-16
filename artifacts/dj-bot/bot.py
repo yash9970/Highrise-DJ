@@ -131,7 +131,9 @@ class DJBot(BaseBot):
                         await asyncio.sleep(6)
             
             if not teleported:
-                print("[BOT] CRITICAL: Could not teleport into room. Ghost session stuck!")
+                print("[BOT] CRITICAL: Could not teleport into room. Ghost session stuck! Forcing restart...")
+                import os
+                os._exit(1)
 
             await asyncio.sleep(2)
 
