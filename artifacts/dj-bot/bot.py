@@ -120,6 +120,7 @@ class DJBot(BaseBot):
                 await self.highrise.teleport(session_metadata.user_id, teleport_pos)
                 print(f"[BOT] Teleported to position: {teleport_pos}")
             except Exception as e:
+                print(f"[BOT] WARNING: Could not teleport: {e}")
                 if "not in room" in str(e).lower() or "server error" in str(e).lower():
                     resp = await self.highrise.get_room_users()
                     if hasattr(resp, "content") and len(resp.content) > 1:
