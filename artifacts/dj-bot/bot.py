@@ -170,7 +170,7 @@ class DJBot(BaseBot):
     async def _position_check_loop(self):
         """Every 15 seconds, check if room woke up, and teleport exactly once."""
         await asyncio.sleep(10)
-        room_is_live = False
+        self.room_is_live = False
         while True:
             try:
                 await asyncio.sleep(15)
@@ -180,8 +180,8 @@ class DJBot(BaseBot):
                 
                 # If there is more than 1 user, room is awake
                 if num_users > 1:
-                    if not room_is_live:
-                        room_is_live = True
+                    if not self.room_is_live:
+                        self.room_is_live = True
                         from vip_checker import get_dj_pos
                         pos_data = await get_dj_pos()
                         if pos_data:
@@ -191,7 +191,7 @@ class DJBot(BaseBot):
                         await self.highrise.teleport(self.bot_id, teleport_pos)
                         print("[BOT] Room woke up. Spawned bot successfully.")
                 else:
-                    room_is_live = False
+                    self.room_is_live = False
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -201,6 +201,9 @@ class DJBot(BaseBot):
         i = 0
         while True:
             try:
+                if not self.room_is_live:
+                    await asyncio.sleep(10)
+                    continue
                 emote = DANCE_EMOTES[i % len(DANCE_EMOTES)]
                 await self.highrise.send_emote(emote)
                 print(f"[BOT] Dancing: {emote}")
@@ -218,6 +221,9 @@ class DJBot(BaseBot):
         i = 0
         while True:
             try:
+                if not self.room_is_live:
+                    await asyncio.sleep(10)
+                    continue
                 phrase = DJ_PHRASES[i % len(DJ_PHRASES)]
                 await self.highrise.chat(phrase)
                 print(f"[BOT] DJ talk: {phrase}")
