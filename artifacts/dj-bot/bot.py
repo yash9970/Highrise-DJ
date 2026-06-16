@@ -38,6 +38,41 @@ TRENDING_SONGS = [
     "INDUSTRY BABY Lil Nas X",
 ]
 
+MOOD_PLAYLISTS = {
+    "chill": [
+        "Watermelon Sugar Harry Styles",
+        "Golden Hour JVKE",
+        "Sunflower Post Malone",
+        "Lovely Billie Eilish Khalid",
+        "Heather Conan Gray",
+        "Labyrinth Taylor Swift",
+    ],
+    "hype": [
+        "HUMBLE Kendrick Lamar",
+        "INDUSTRY BABY Lil Nas X",
+        "Not Like Us Kendrick Lamar",
+        "Million Dollar Baby Tommy Richman",
+        "goosebumps Travis Scott",
+        "SICKO MODE Travis Scott",
+    ],
+    "romantic": [
+        "Perfect Ed Sheeran",
+        "All of Me John Legend",
+        "Die With A Smile Lady Gaga Bruno Mars",
+        "Golden Hour JVKE",
+        "Lover Taylor Swift",
+        "Thinking Out Loud Ed Sheeran",
+    ],
+    "party": [
+        "APT. Rose Bruno Mars",
+        "Levitating Dua Lipa",
+        "Blinding Lights The Weeknd",
+        "Dynamite BTS",
+        "Uptown Funk Bruno Mars",
+        "Can't Stop The Feeling Justin Timberlake",
+    ],
+}
+
 DJ_PHRASES = [
     "Let the music move you! DJ in the house!",
     "Vibes only! Keep the energy up!",
@@ -54,14 +89,17 @@ DJ_PHRASES = [
 HELP_LINES = [
     "=== DJ Bot Commands ===",
     "!dj play <song> — Queue a song (VIP/Mod)",
-    "!dj queue — Show song queue",
+    "!dj dedicate <song> to @user — Dedicate a song",
+    "!dj mood <chill/hype/romantic/party> — Switch vibe",
     "!dj np — Now playing",
-    "!dj voteskip — Vote to skip (3 votes needed)",
+    "!dj queue — Show song queue",
+    "!dj voteskip — Vote to skip (3 votes)",
+    "!dj top — Most requested songs",
+    "!dj shoutout @user — Hype someone",
+    "!dj radio — Get the radio stream URL",
     "!dj skip — Force skip (Mod/Master)",
-    "!dj top — Show most requested songs",
-    "!dj shoutout @user — Shoutout someone",
     "!dj clear — Clear queue (Master)",
-    "!dj setbot — Move bot to your location (Master)",
+    "!dj setbot — Move bot (Master)",
     "!dj help — This message",
 ]
 
@@ -85,12 +123,12 @@ class DJBot(BaseBot):
         self._dance_task: asyncio.Task | None = None
         self._talk_task: asyncio.Task | None = None
         self._is_fallback_playing: bool = False
-        # Vote-skip tracking: set of user IDs who voted to skip current song
         self._skip_votes: set[str] = set()
-        # Song request counts for !dj top
         self._song_request_counts: dict[str, int] = {}
-        # Required votes to skip
         self._SKIP_VOTE_THRESHOLD = 3
+        # Current mood playlist (None = use TRENDING_SONGS)
+        self._mood: str | None = None
+        self._mood_index: int = 0
 
     async def on_start(self, session_metadata: SessionMetadata) -> None:
         self._owner_id = session_metadata.room_info.owner_id
@@ -356,10 +394,16 @@ class DJBot(BaseBot):
                     await asyncio.to_thread(delete_song, song_id)
                     await asyncio.sleep(1)
 
-                # ── Fallback trending ─────────────────────────────────────
+                # ── Fallback trending ─────────────────────────────
                 else:
-                    trending_song = TRENDING_SONGS[_trending_index % len(TRENDING_SONGS)]
-                    _trending_index += 1
+                    # Use mood playlist if active, otherwise use trending
+                    if self._mood and self._mood in MOOD_PLAYLISTS:
+                        playlist = MOOD_PLAYLISTS[self._mood]
+                        trending_song = playlist[self._mood_index % len(playlist)]
+                        self._mood_index += 1
+                    else:
+                        trending_song = TRENDING_SONGS[_trending_index % len(TRENDING_SONGS)]
+                        _trending_index += 1
 
                     print(f"[SONG] Queue empty — auto-playing: {trending_song!r}")
                     self._is_fallback_playing = True
@@ -470,6 +514,64 @@ class DJBot(BaseBot):
                     )
                 else:
                     await self._reply(f"🎵 Added '{args}' — loading next! (by {user.username})")
+            return
+
+        # ── dedicate ───────────────────────────────────────────────────────
+        if command == "dedicate":
+            if not authorized:
+                await self._reply(f"@{user.username} Only VIPs, mods, or the master can dedicate songs.")
+                return
+            # Parse: !dj dedicate <song> to @user
+            if " to " not in args.lower():
+                await self._reply(f"@{user.username} Usage: !dj dedicate <song> to @username")
+                return
+            parts_d = args.split(" to ", 1)
+            song_d = parts_d[0].strip()
+            target_d = parts_d[1].strip().lstrip("@")
+            if not song_d or not target_d:
+                await self._reply(f"@{user.username} Usage: !dj dedicate <song> to @username")
+                return
+            await asyncio.to_thread(add_song, song_d, user.username)
+            key = song_d.lower().strip()
+            self._song_request_counts[key] = self._song_request_counts.get(key, 0) + 1
+            self._skip_votes.clear()
+            if self._is_fallback_playing:
+                await broadcaster.stop_current(interrupted=True)
+            await self._reply(
+                f"💝 @{user.username} dedicates '{song_d}' to @{target_d}! 🎶✨"
+            )
+            return
+
+        # ── mood ──────────────────────────────────────────────────────────────
+        if command == "mood":
+            mood_arg = args.lower().strip()
+            moods = list(MOOD_PLAYLISTS.keys())
+            if not mood_arg:
+                current = self._mood or "default (trending)"
+                await self._reply(f"🎶 Current mood: {current}\nAvailable: {', '.join(moods)} | off")
+                return
+            if mood_arg == "off":
+                self._mood = None
+                self._mood_index = 0
+                await self._reply("🎶 Mood reset to trending playlist!")
+                await broadcaster.stop_current(interrupted=True)
+                return
+            if mood_arg not in moods:
+                await self._reply(f"@{user.username} Unknown mood! Choose: {', '.join(moods)}")
+                return
+            self._mood = mood_arg
+            self._mood_index = 0
+            mood_emojis = {"chill": "🏖️", "hype": "🔥", "romantic": "💖", "party": "🎉"}
+            emoji = mood_emojis.get(mood_arg, "🎶")
+            await self._reply(f"{emoji} Switching to {mood_arg.upper()} mood! Vibes loading...")
+            await broadcaster.stop_current(interrupted=True)
+            return
+
+        # ── radio ──────────────────────────────────────────────────────────────
+        if command == "radio":
+            await self._reply(
+                "📻 Radio Stream URL:\nhttps://yash9970-highrise-dj.hf.space/stream\nPaste this in Room Settings → Radio!"
+            )
             return
 
         # ── queue ────────────────────────────────────────────────────────────
