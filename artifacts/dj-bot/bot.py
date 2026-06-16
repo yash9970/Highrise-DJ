@@ -53,15 +53,15 @@ DJ_PHRASES = [
 
 HELP_LINES = [
     "=== DJ Bot Commands ===",
-    "!dj play <song> — Queue a song",
+    "!dj play <song> — Queue a song (VIP/Mod)",
     "!dj queue — Show song queue",
     "!dj np — Now playing",
-    "!dj skip — Skip current song (mod/master)",
-    "!dj clear — Clear queue (master)",
-    "!dj listeners — Listener count (master)",
-    "!dj wear <id> — Wear item (master)",
-    "!dj unwear <id> — Remove item (master)",
-    "!dj setbot — Move bot to your location (master)",
+    "!dj voteskip — Vote to skip (3 votes needed)",
+    "!dj skip — Force skip (Mod/Master)",
+    "!dj top — Show most requested songs",
+    "!dj shoutout @user — Shoutout someone",
+    "!dj clear — Clear queue (Master)",
+    "!dj setbot — Move bot to your location (Master)",
     "!dj help — This message",
 ]
 
@@ -84,9 +84,13 @@ class DJBot(BaseBot):
         self._song_task: asyncio.Task | None = None
         self._dance_task: asyncio.Task | None = None
         self._talk_task: asyncio.Task | None = None
-        # True only while the fallback/trending song is playing
-        # (not queued requests — so the play handler knows to interrupt)
         self._is_fallback_playing: bool = False
+        # Vote-skip tracking: set of user IDs who voted to skip current song
+        self._skip_votes: set[str] = set()
+        # Song request counts for !dj top
+        self._song_request_counts: dict[str, int] = {}
+        # Required votes to skip
+        self._SKIP_VOTE_THRESHOLD = 3
 
     async def on_start(self, session_metadata: SessionMetadata) -> None:
         self._owner_id = session_metadata.room_info.owner_id
@@ -446,6 +450,11 @@ class DJBot(BaseBot):
                 return
 
             await asyncio.to_thread(add_song, args, user.username)
+            # Track song request count for !dj top
+            key = args.lower().strip()
+            self._song_request_counts[key] = self._song_request_counts.get(key, 0) + 1
+            # Reset skip votes when a new song is queued
+            self._skip_votes.clear()
 
             if self._is_fallback_playing:
                 # Interrupt trending — the song loop will pick up the queued song next
@@ -495,6 +504,25 @@ class DJBot(BaseBot):
                 await self._reply("Nothing is playing right now. Use !dj play <song>!")
             return
 
+        # ── voteskip ─────────────────────────────────────────────────────────
+        if command == "voteskip":
+            if not broadcaster.is_playing:
+                await self._reply("Nothing is playing right now!")
+                return
+            if user.id in self._skip_votes:
+                await self._reply(f"@{user.username} You already voted to skip! ({len(self._skip_votes)}/{self._SKIP_VOTE_THRESHOLD})")  
+                return
+            self._skip_votes.add(user.id)
+            votes = len(self._skip_votes)
+            if votes >= self._SKIP_VOTE_THRESHOLD:
+                self._skip_votes.clear()
+                await self._reply(f"🗳️ Vote passed! ({votes}/{self._SKIP_VOTE_THRESHOLD}) Skipping song! ⏭️")
+                await broadcaster.stop_current(interrupted=True)
+            else:
+                needed = self._SKIP_VOTE_THRESHOLD - votes
+                await self._reply(f"🗳️ @{user.username} voted to skip! {needed} more vote(s) needed. ({votes}/{self._SKIP_VOTE_THRESHOLD})")
+            return
+
         # ── skip ─────────────────────────────────────────────────────────────
         if command == "skip":
             if not await self._is_bot_mod(user, is_master):
@@ -512,6 +540,7 @@ class DJBot(BaseBot):
             else:
                 await self._reply(f"⏭️ Skipped fallback radio!")
 
+            self._skip_votes.clear()  # Reset votes on manual skip
             await broadcaster.stop_current(interrupted=True)
             # The existing _song_loop is blocked at await broadcaster.play().
             # stop_current() kills the subprocess, play() returns, and the loop
@@ -621,6 +650,29 @@ class DJBot(BaseBot):
         if command == "listeners":
             if is_master:
                 await self._reply(f"📻 Radio listeners: {broadcaster.listener_count}")
+            return
+
+        # ── top ──────────────────────────────────────────────────────────────
+        if command == "top":
+            if not self._song_request_counts:
+                await self._reply("No songs have been requested yet! Use !dj play <song> to request.")
+                return
+            sorted_songs = sorted(self._song_request_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+            lines = ["🎵 Top Requested Songs:"]
+            for i, (song, count) in enumerate(sorted_songs, 1):
+                lines.append(f"{i}. {song} ({count} requests)")
+            await self._reply("\n".join(lines))
+            return
+
+        # ── shoutout ─────────────────────────────────────────────────────────
+        if command == "shoutout":
+            target = args.strip().lstrip("@")
+            if not target:
+                await self._reply(f"@{user.username} Usage: !dj shoutout @username")
+                return
+            await self._reply(
+                f"🎤 BIG SHOUTOUT to @{target}! 🔥 You're amazing! Keep vibing! 💃🕺"
+            )
             return
 
         # ── floor bounds ─────────────────────────────────────────────────────
@@ -755,4 +807,13 @@ class DJBot(BaseBot):
         pass
 
     async def on_tip(self, sender: User, receiver: User, tip) -> None:
-        pass
+        try:
+            amount = getattr(tip, "amount", 0)
+            if not isinstance(amount, int):
+                amount = 0
+            if amount > 0:
+                await self._reply(
+                    f"💰 THANK YOU @{sender.username} for the {amount} gold tip! You're keeping the music alive! 🎶❤️"
+                )
+        except Exception as e:
+            print(f"[BOT] on_tip error: {e}")
