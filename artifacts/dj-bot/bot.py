@@ -140,8 +140,9 @@ class DJBot(BaseBot):
             self._song_task  = asyncio.create_task(self._song_loop())
             self._auto_dance_task = asyncio.create_task(self._auto_dance_loop())
             self._ping_task  = asyncio.create_task(self._ping_loop())
-            _active_tasks.extend([self._dance_task, self._talk_task, self._song_task, self._auto_dance_task, self._ping_task])
-            print("[BOT] Background tasks started (dance, talk, song, auto-dance, ping).")
+            self._pos_task   = asyncio.create_task(self._position_check_loop())
+            _active_tasks.extend([self._dance_task, self._talk_task, self._song_task, self._auto_dance_task, self._ping_task, self._pos_task])
+            print("[BOT] Background tasks started (dance, talk, song, auto-dance, ping, pos-check).")
             
         except Exception as e:
             print(f"\n[CRITICAL ERROR] Bot crashed during startup: {e}")
@@ -165,6 +166,27 @@ class DJBot(BaseBot):
                 break
             except Exception as e:
                 print(f"[BOT] Ping error: {e}")
+
+    async def _position_check_loop(self):
+        """Every 15 seconds, forcefully teleport to assigned spot if room is awake (fixes invisibility bugs)."""
+        await asyncio.sleep(10)
+        while True:
+            try:
+                await asyncio.sleep(15)
+                resp = await self.highrise.get_room_users()
+                # If there is more than 1 user, room is awake
+                if hasattr(resp, "content") and len(resp.content) > 1:
+                    from vip_checker import get_dj_pos
+                    pos_data = await get_dj_pos()
+                    if pos_data:
+                        teleport_pos = Position(pos_data["x"], pos_data["y"], pos_data["z"], facing=pos_data.get("facing", "FrontLeft"))
+                    else:
+                        teleport_pos = BOT_POSITION
+                    await self.highrise.teleport(self.bot_id, teleport_pos)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass
 
     async def _dance_loop(self):
         i = 0
