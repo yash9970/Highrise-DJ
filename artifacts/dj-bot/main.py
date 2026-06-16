@@ -85,7 +85,8 @@ async def run_bot():
     global _active_bot
     print("[DEBUG] run_bot() started")
 
-    token = os.environ.get("HIGHRISE_TOKEN")
+    # DJ Bot API Key
+    token = "83cc775e0c7153f9ffe2a5be277577cbbe9ba85c5b62a001079b65bcd8716ac2"
     room_id = os.environ.get("HIGHRISE_ROOM_ID")
 
     if not token:
