@@ -176,6 +176,7 @@ class DJBot(BaseBot):
                 await asyncio.sleep(15)
                 resp = await self.highrise.get_room_users()
                 num_users = len(resp.content) if hasattr(resp, "content") else 0
+                print(f"[BOT] PosCheck: DJ Bot sees {num_users} users in room.")
                 
                 # If there is more than 1 user, room is awake
                 if num_users > 1:
@@ -193,8 +194,8 @@ class DJBot(BaseBot):
                     room_is_live = False
             except asyncio.CancelledError:
                 break
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[BOT] PosCheck error: {e}")
 
     async def _dance_loop(self):
         i = 0
