@@ -168,21 +168,29 @@ class DJBot(BaseBot):
                 print(f"[BOT] Ping error: {e}")
 
     async def _position_check_loop(self):
-        """Every 15 seconds, forcefully teleport to assigned spot if room is awake (fixes invisibility bugs)."""
+        """Every 15 seconds, check if room woke up, and teleport exactly once."""
         await asyncio.sleep(10)
+        room_is_live = False
         while True:
             try:
                 await asyncio.sleep(15)
                 resp = await self.highrise.get_room_users()
+                num_users = len(resp.content) if hasattr(resp, "content") else 0
+                
                 # If there is more than 1 user, room is awake
-                if hasattr(resp, "content") and len(resp.content) > 1:
-                    from vip_checker import get_dj_pos
-                    pos_data = await get_dj_pos()
-                    if pos_data:
-                        teleport_pos = Position(pos_data["x"], pos_data["y"], pos_data["z"], facing=pos_data.get("facing", "FrontLeft"))
-                    else:
-                        teleport_pos = BOT_POSITION
-                    await self.highrise.teleport(self.bot_id, teleport_pos)
+                if num_users > 1:
+                    if not room_is_live:
+                        room_is_live = True
+                        from vip_checker import get_dj_pos
+                        pos_data = await get_dj_pos()
+                        if pos_data:
+                            teleport_pos = Position(pos_data["x"], pos_data["y"], pos_data["z"], facing=pos_data.get("facing", "FrontLeft"))
+                        else:
+                            teleport_pos = BOT_POSITION
+                        await self.highrise.teleport(self.bot_id, teleport_pos)
+                        print("[BOT] Room woke up. Spawned bot successfully.")
+                else:
+                    room_is_live = False
             except asyncio.CancelledError:
                 break
             except Exception:
