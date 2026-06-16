@@ -171,6 +171,7 @@ class DJBot(BaseBot):
         """Every 15 seconds, check if room woke up, and teleport exactly once."""
         await asyncio.sleep(10)
         self.room_is_live = False
+        empty_count = 0
         while True:
             try:
                 await asyncio.sleep(15)
@@ -180,6 +181,7 @@ class DJBot(BaseBot):
                 
                 # If there is more than 1 user, room is awake
                 if num_users > 1:
+                    empty_count = 0
                     if not self.room_is_live:
                         self.room_is_live = True
                         from vip_checker import get_dj_pos
@@ -192,6 +194,11 @@ class DJBot(BaseBot):
                         print("[BOT] Room woke up. Spawned bot successfully.")
                 else:
                     self.room_is_live = False
+                    empty_count += 1
+                    if empty_count >= 12:
+                        print("[BOT] Room empty for 3 minutes. Restarting to clear ghost instance!")
+                        import os
+                        os._exit(1)
             except asyncio.CancelledError:
                 break
             except Exception as e:
