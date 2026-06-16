@@ -1,7 +1,7 @@
 import aiohttp
 import asyncio
 
-VIP_API_BASE = "https://highrise-helper.onrender.com"
+VIP_API_BASE = "https://yash9970-highrisebotchaichai.hf.space"
 
 
 async def get_vips() -> list[str]:
