@@ -126,9 +126,28 @@ class DJBot(BaseBot):
         self._skip_votes: set[str] = set()
         self._song_request_counts: dict[str, int] = {}
         self._SKIP_VOTE_THRESHOLD = 3
-        # Current mood playlist (None = use TRENDING_SONGS)
         self._mood: str | None = None
         self._mood_index: int = 0
+        # Cache of username -> user_id for DMs to offline VIPs
+        self._user_id_cache: dict[str, str] = {}
+        self._daily_dm_task: asyncio.Task | None = None
+
+    # ── DM helper ─────────────────────────────────────────────────────
+
+    async def safe_whisper(self, user_id: str, message: str):
+        """Send a private DM to a user. Falls back to chat if whisper fails."""
+        try:
+            await self.highrise.send_whisper(user_id, message)
+        except Exception as e:
+            print(f"[BOT] Whisper failed to {user_id}: {e}")
+
+    async def safe_whisper_lines(self, user_id: str, lines: list[str]):
+        """Send multiple lines as private DMs."""
+        for line in lines:
+            if line.strip():
+                await self.safe_whisper(user_id, line[:200])
+                await asyncio.sleep(0.4)
+
 
     async def on_start(self, session_metadata: SessionMetadata) -> None:
         self._owner_id = session_metadata.room_info.owner_id
@@ -186,8 +205,11 @@ class DJBot(BaseBot):
             self._auto_dance_task = asyncio.create_task(self._auto_dance_loop())
             self._ping_task  = asyncio.create_task(self._ping_loop())
             self._pos_task   = asyncio.create_task(self._position_check_loop())
-            _active_tasks.extend([self._dance_task, self._talk_task, self._song_task, self._auto_dance_task, self._ping_task, self._pos_task])
-            print("[BOT] Background tasks started (dance, talk, song, auto-dance, ping, pos-check).")
+            self._daily_dm_task = asyncio.create_task(self._daily_vip_dm_loop())
+            _active_tasks.extend([self._dance_task, self._talk_task, self._song_task,
+                                   self._auto_dance_task, self._ping_task, self._pos_task,
+                                   self._daily_dm_task])
+            print("[BOT] Background tasks started (dance, talk, song, auto-dance, ping, pos-check, daily-dm).")
             
         except Exception as e:
             print(f"\n[CRITICAL ERROR] Bot crashed during startup: {e}")
@@ -212,21 +234,78 @@ class DJBot(BaseBot):
             except Exception as e:
                 print(f"[BOT] Ping error: {e}")
 
+    async def _daily_vip_dm_loop(self):
+        """
+        Every day at 10 PM IST (16:30 UTC), send a private DM to all VIPs
+        with a joke + invite to come to the room.
+        """
+        import datetime
+        import random
+        DAILY_JOKES = [
+            "Why don't scientists trust atoms? Because they make up everything! 😂",
+            "Why did the scarecrow win an award? He was outstanding in his field! 🌾",
+            "I told my wife she was drawing her eyebrows too high. She looked surprised! 😂",
+            "What do you call a fake noodle? An impasta! 🍝",
+            "Why can't you give Elsa a balloon? She'll let it go! 🎈",
+            "What do you call cheese that isn't yours? Nacho cheese! 🧀",
+            "Why did the bicycle fall over? Because it was two-tired! 🚲",
+            "What do you call a sleeping dinosaur? A dino-snore! 🦕",
+            "Why don't eggs tell jokes? They'd crack each other up! 🥚",
+            "What do you call a fish without eyes? A fsh! 🐟",
+        ]
+        sent_today = False
+        while True:
+            try:
+                await asyncio.sleep(60)  # Check every minute
+                now_utc = datetime.datetime.utcnow()
+                # 10 PM IST = 16:30 UTC
+                is_notification_time = (now_utc.hour == 16 and now_utc.minute == 30)
+
+                if is_notification_time and not sent_today:
+                    sent_today = True
+                    joke = random.choice(DAILY_JOKES)
+                    message = (
+                        f"🎉 Hey VIP! The DJ room is LIVE tonight! 🎶🔥\n"
+                        f"Come vibe with us, the music is banging! 🎙️\n"
+                        f"\n😂 Joke of the day:\n{joke}\n"
+                        f"\nSee you on the dance floor! 💃🕺"
+                    )
+                    # Get VIP list from Helper API
+                    try:
+                        from vip_checker import get_vips
+                        vip_names = await get_vips()
+                        sent_count = 0
+                        for vip_name in vip_names:
+                            vip_id = self._user_id_cache.get(vip_name.lower())
+                            if vip_id:
+                                await self.safe_whisper(vip_id, message)
+                                sent_count += 1
+                                await asyncio.sleep(1.5)  # Rate limit
+                        print(f"[BOT] Daily VIP DM sent to {sent_count}/{len(vip_names)} VIPs")
+                    except Exception as e:
+                        print(f"[BOT] Daily VIP DM error: {e}")
+
+                elif not is_notification_time:
+                    sent_today = False  # Reset for next day
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"[BOT] Daily DM loop error: {e}")
+
+
     async def _position_check_loop(self):
-        """Every 15 seconds, check if room woke up, and teleport exactly once."""
+        """Every 15 seconds, check if room has users and teleport when it wakes up."""
         await asyncio.sleep(10)
         self.room_is_live = False
-        empty_count = 0
         while True:
             try:
                 await asyncio.sleep(15)
                 resp = await self.highrise.get_room_users()
                 num_users = len(resp.content) if hasattr(resp, "content") else 0
                 print(f"[BOT] PosCheck: DJ Bot sees {num_users} users in room.")
-                
-                # If there is more than 1 user, room is awake
+
                 if num_users > 1:
-                    empty_count = 0
                     if not self.room_is_live:
                         self.room_is_live = True
                         from vip_checker import get_dj_pos
@@ -236,15 +315,12 @@ class DJBot(BaseBot):
                         else:
                             teleport_pos = BOT_POSITION
                         await self.highrise.teleport(self.bot_id, teleport_pos)
-                        print("[BOT] Room woke up. Spawned bot successfully.")
+                        print("[BOT] Room woke up. Bot teleported to DJ position.")
                 else:
+                    # Room is genuinely empty — just wait, do NOT restart.
+                    # Restarting on empty room causes Multilogin loops.
                     self.room_is_live = False
-                    empty_count += 1
-                    if empty_count >= 4:
-                        print("[BOT] Room empty for 1 minute. Waiting 20s for session to close, then restarting...")
-                        await asyncio.sleep(20)
-                        import os
-                        os._exit(1)
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -450,6 +526,8 @@ class DJBot(BaseBot):
     async def on_chat(self, user: User, message: str) -> None:
         msg = message.strip()
         print(f"[CHAT] {user.username}: {msg}")
+        # Cache user ID every time they chat (for 10 PM VIP DMs)
+        self._user_id_cache[user.username.lower()] = user.id
 
         if not msg.lower().startswith("!dj"):
             return
@@ -468,10 +546,8 @@ class DJBot(BaseBot):
 
         # ── help ─────────────────────────────────────────────────────────────
         if command == "help":
-            if is_master:
-                await self._reply_lines(HELP_LINES)
-            else:
-                await self._reply(f"@{user.username} Only the master can use !dj help.")
+            # DM the help to whoever asked — keeps chat clean
+            await self.safe_whisper_lines(user.id, HELP_LINES)
             return
 
         # ── inventory ────────────────────────────────────────────────────────
@@ -567,7 +643,7 @@ class DJBot(BaseBot):
             await broadcaster.stop_current(interrupted=True)
             return
 
-        # ── radio ──────────────────────────────────────────────────────────────
+        # ── radio ────────────────────────────────────────────────────────────
         if command == "radio":
             await self._reply(
                 "📻 Radio Stream URL:\nhttps://yash9970-highrise-dj.hf.space/stream\nPaste this in Room Settings → Radio!"
@@ -577,33 +653,30 @@ class DJBot(BaseBot):
         # ── queue ────────────────────────────────────────────────────────────
         if command == "queue":
             if not authorized:
-                await self._reply(
-                    f"@{user.username} Only VIPs, mods, or the master can view the queue."
-                )
+                await self.safe_whisper(user.id, "❌ Only VIPs, mods, or the master can view the queue.")
                 return
             queue = await asyncio.to_thread(get_queue)
             if not queue:
-                await self._reply("Queue is empty! Use !dj play <song> to request.")
+                await self.safe_whisper(user.id, "Queue is empty! Use !dj play <song> to request.")
             else:
                 lines = ["📋 Song Queue:"]
                 for i, song in enumerate(queue, 1):
-                    # Position 1 = currently playing/searching if broadcaster is active
                     if i == 1 and broadcaster.is_active:
                         status = " ▶️ PLAYING" if broadcaster.is_playing else " 🔍 SEARCHING"
                     else:
                         status = ""
                     lines.append(f"{i}. {song['song_name']} by {song['requested_by']}{status}")
-                await self._reply("\n".join(lines))
+                await self.safe_whisper_lines(user.id, lines)
             return
 
         # ── np (now playing) ─────────────────────────────────────────────────
         if command in ("nowplaying", "np"):
             if broadcaster.is_playing and broadcaster.current_title:
-                await self._reply(f"▶️ Now playing: {broadcaster.current_title}")
+                await self.safe_whisper(user.id, f"▶️ Now playing: {broadcaster.current_title}")
             elif broadcaster.is_active:
-                await self._reply("🔍 Searching for next song...")
+                await self.safe_whisper(user.id, "🔍 Searching for next song...")
             else:
-                await self._reply("Nothing is playing right now. Use !dj play <song>!")
+                await self.safe_whisper(user.id, "Nothing is playing right now. Use !dj play <song>!")
             return
 
         # ── voteskip ─────────────────────────────────────────────────────────
@@ -891,8 +964,9 @@ class DJBot(BaseBot):
 
     async def on_user_join(self, user: User, position: Position | AnchorPosition) -> None:
         print(f"[BOT] User joined: {user.username}")
+        # Cache user ID for DMs (needed for 10 PM VIP notifications)
+        self._user_id_cache[user.username.lower()] = user.id
         # When a user joins, the room wakes up. Teleport to the DJ position just in case we were stuck at the door!
-        # Wait 2 seconds for the room's physics mesh to fully load before teleporting
         try:
             await asyncio.sleep(2.0)
             from vip_checker import get_dj_pos
